@@ -16,6 +16,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from graph_query import ParquetSource, TrinoSource, trace, build_network
+from llm_explain import build_evidence, explain
 
 st.set_page_config(page_title="AML Graph", layout="wide", page_icon="🕸️")
 BLOCKLIST = Path(os.environ.get("DATA_DIR", "data")) / "blocklist.parquet"
@@ -125,10 +126,22 @@ if mode == "🔎 Investigate account":
                 block_account(acct, reason); st.success(f"{acct} blocked"); st.rerun()
 
     st.markdown("#### Transactions of this account (by risk)")
-    inc = src.incident_edges({acct}).sort_values("risk_score", ascending=False).head(50).copy()
+    incident = src.incident_edges({acct})
+    inc = incident.sort_values("risk_score", ascending=False).head(50).copy()
     inc["ts"] = pd.to_datetime(inc["ts"], unit="s")
     st.dataframe(inc.rename(columns={"source_account": "from", "target_account": "to",
                                      "risk_score": "risk"}), hide_index=True, height=240)
+
+    st.markdown("#### 🧠 AI-объяснение (GraphRAG → SAR)")
+    if st.button("Объяснить, почему подозрение на дроппера", key="explain_btn"):
+        with st.spinner("Собираю улики из эго-графа и спрашиваю ИИ…"):
+            ev = build_evidence(acct, edges, attrs, incident)
+            st.session_state["sar"] = explain(ev)
+            st.session_state["sar_acct"] = acct
+    if st.session_state.get("sar") and st.session_state.get("sar_acct") == acct:
+        st.markdown(st.session_state["sar"])
+        with st.expander("улики, отправленные модели"):
+            st.code(build_evidence(acct, edges, attrs, incident))
 
 # ============================ MONITOR ============================
 else:

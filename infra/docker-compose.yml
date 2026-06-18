@@ -183,6 +183,9 @@ services:
       DASH_SOURCE: trino
       TRINO_HOST: trino
       DATA_DIR: /data
+    env_file:
+      - path: ../.env          # LLM_API_KEY / LLM_BASE_URL / LLM_MODEL (see .env.example)
+        required: false        # dashboard still runs without it (AI explain shows a hint)
     volumes:
       - ../data:/data:ro     # only used if DASH_SOURCE=parquet (offline fallback)
 

@@ -8,5 +8,7 @@ data/*.parquet
 data/*.png
 data/*.html
 data/blocklist.parquet
-src/ml/artifacts/
+src/ml/artifacts/*
+!src/ml/artifacts/tgnlite.pt
+!src/ml/artifacts/tgnlite_meta.json
 *.zip

@@ -2,8 +2,9 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .DS_Store
-# generated, regenerable artifacts
 data/*.parquet
+!data/scored_transactions.parquet
+!data/scored_accounts.parquet
 data/*.png
 data/*.html
 data/blocklist.parquet

@@ -47,7 +47,18 @@ def embed(net):
         components.html(open(f.name).read(), height=730, scrolling=False)
 
 
-src = get_source()
+try:
+    src = get_source()
+except FileNotFoundError:
+    st.error(
+        "Scored data not found at `$DATA_DIR`.\n\n"
+        "Generate it on the host (needs torch), then it appears via the mounted volume:\n"
+        "```\npython src/generator/generate_graph.py --out data\n"
+        "python src/ml/train_temporal.py --data data --out src/ml/artifacts\n"
+        "python src/ml/score_export.py --data data --out data\n```\n"
+        "…or set `DASH_SOURCE=trino` to read the lake.")
+    st.stop()
+
 st.sidebar.title("🕸️ AML Graph")
 mode = st.sidebar.radio("Mode", ["🔎 Investigate account", "📡 Monitor suspicious"], key="mode")
 

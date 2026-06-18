@@ -20,6 +20,13 @@ SYSTEM_PROMPT = (
     "счёте и его эго-сети: токсичность от GNN, риск транзакций, токсичность контрагентов, "
     "текстовый список рёбер.\n\n"
     "Задача: оценить, ведёт ли счёт себя как дроппер/мул, и объяснить — строго по уликам.\n\n"
+    "ЯКОРЬ — оценка токсичности GNN: это вердикт самой модели. Если она НИЗКАЯ (≈<0.4), модель "
+    "считает счёт легитимным — НЕ переклассифицируй в 'дроппер' без сильных СОБСТВЕННЫХ поведенческих "
+    "улик счёта; по умолчанию доверяй низкой токсичности.\n\n"
+    "РАЗЛИЧАЙ ХАБ И МУЛА (важно!): pass-through ≈1 сам по себе ничего не значит. У МУЛА это 1–2 "
+    "транзакции с 1–2 контрагентами и высокой токсичностью. У легитимного ХАБА/мерчанта/PSP — сотни "
+    "транзакций с десятками-сотнями контрагентов и НИЗКАЯ токсичность. Хаб закономерно получает деньги "
+    "и от плохих акторов и сам платит многим — это норма коммерции, НЕ дроппер.\n\n"
     "КРИТИЧЕСКИ ВАЖНО (избегай вины по ассоциации):\n"
     "- Один или несколько входящих переводов от 'красного' контрагента САМИ ПО СЕБЕ НЕ делают счёт "
     "дроппером. Легитимные счета регулярно получают деньги от плохих акторов (жертвы, продавцы, "
@@ -45,20 +52,26 @@ SYSTEM_PROMPT = (
 
 
 def build_evidence(account: str, edges: pd.DataFrame, attrs: pd.DataFrame,
-                   incident: pd.DataFrame, max_edges: int = 40) -> str:
+                   incident: pd.DataFrame, max_edges: int = 30) -> str:
     tox = float(attrs.loc[account, "toxicity"]) if account in attrs.index else float("nan")
     inn = incident[incident.target_account == account]
     out = incident[incident.source_account == account]
+    in_cp, out_cp = inn.source_account.nunique(), out.target_account.nunique()
     cp_tox = attrs["toxicity"] if "toxicity" in attrs else pd.Series(dtype=float)
+    deg, cps = len(inn) + len(out), in_cp + out_cp
+    profile = ("много контрагентов — похоже на легитимный ХАБ/мерчант/PSP" if cps >= 30
+               else "узкий профиль" if cps <= 4 else "средний профиль")
 
     lines = [f"Счёт под проверкой: {account}",
-             f"Токсичность (GNN, 0..1): {tox:.3f}",
-             f"Входящих транзакций: {len(inn)} на сумму {inn.amount.sum():.0f}",
-             f"Исходящих транзакций: {len(out)} на сумму {out.amount.sum():.0f}"]
+             f"ОЦЕНКА ТОКСИЧНОСТИ GNN (вердикт самой модели, 0..1): {tox:.3f}",
+             f"Входящих: {len(inn)} tx от {in_cp} контрагентов на {inn.amount.sum():.0f}",
+             f"Исходящих: {len(out)} tx к {out_cp} контрагентам на {out.amount.sum():.0f}",
+             f"Степень: {deg} транзакций, {cps} уникальных контрагентов — {profile}"]
     if len(inn) and len(out):
-        lines.append(f"Доля переведено дальше (pass-through): {out.amount.sum()/max(inn.amount.sum(),1):.2f}")
+        lines.append(f"Pass-through (сумма исх/вх): {out.amount.sum()/max(inn.amount.sum(),1):.2f} "
+                     f"(у мула ≈1 при 1–2 транзакциях; у хаба ≈1 при сотнях транзакций)")
 
-    lines.append("\nРешающие транзакции счёта (по риску):")
+    lines.append("\nСОБСТВЕННЫЕ транзакции счёта (топ по риску):")
     top = incident.sort_values("risk_score", ascending=False).head(8)
     for _, e in top.iterrows():
         d = "ВХОД" if e.target_account == account else "ВЫХОД"
@@ -67,7 +80,7 @@ def build_evidence(account: str, edges: pd.DataFrame, attrs: pd.DataFrame,
         lines.append(f"  [{d}] {other}  сумма={e.amount:.0f}  риск={float(e.risk_score or 0):.2f}  "
                      f"токсичность_контрагента={ot:.2f}")
 
-    lines.append("\nЭго-сеть (текстовый список рёбер, источник --[сумма, риск]--> получатель):")
+    lines.append("\nКОНТЕКСТ ЭГО-СЕТИ — рёбра МЕЖДУ СОСЕДЯМИ (НЕ транзакции этого счёта!):")
     for _, e in edges.sort_values("risk_score", ascending=False).head(max_edges).iterrows():
         lines.append(f"  {e.source_account} --[{e.amount:.0f}, риск {float(e.risk_score or 0):.2f}]--> {e.target_account}")
     return "\n".join(lines)

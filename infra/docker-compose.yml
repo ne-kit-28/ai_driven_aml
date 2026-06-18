@@ -140,9 +140,7 @@ services:
       dockerfile: seed/Dockerfile
     image: aml/seed:latest
     profiles: ["seed"]
-    depends_on:
-      hive-metastore: {condition: service_started}
-      minio-init: {condition: service_completed_successfully}
+    # run AFTER `--profile core` is up (no depends_on: core services live in another profile)
     environment:
       PYICEBERG_CATALOG__DEFAULT__TYPE: hive
       PYICEBERG_CATALOG__DEFAULT__URI: thrift://hive-metastore:9083
@@ -159,8 +157,7 @@ services:
     build: ../src/ml
     image: aml/scoring:latest
     profiles: ["scoring"]
-    depends_on:
-      hive-metastore: {condition: service_started}
+    # run AFTER `--profile core` is up (no depends_on: core services live in another profile)
     environment:
       PYICEBERG_CATALOG__DEFAULT__TYPE: hive
       PYICEBERG_CATALOG__DEFAULT__URI: thrift://hive-metastore:9083

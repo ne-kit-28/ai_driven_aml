@@ -132,6 +132,47 @@ services:
       SPARK_WORKER_MEMORY: "4g"
     ports: ["8082:8081"]   # worker UI (host 8082)
 
+  # Seed/test service (one-shot) — fills MinIO/Iceberg with synthetic FEATURES_READY
+  # data at the very start, standing in for Stage 2. Run before scoring.
+  seed:
+    build:
+      context: ../src
+      dockerfile: seed/Dockerfile
+    image: aml/seed:latest
+    profiles: ["seed"]
+    depends_on:
+      hive-metastore: {condition: service_started}
+      minio-init: {condition: service_completed_successfully}
+    environment:
+      PYICEBERG_CATALOG__DEFAULT__TYPE: hive
+      PYICEBERG_CATALOG__DEFAULT__URI: thrift://hive-metastore:9083
+      PYICEBERG_CATALOG__DEFAULT__WAREHOUSE: s3://warehouse/
+      PYICEBERG_CATALOG__DEFAULT__S3__ENDPOINT: http://minio:9000
+      PYICEBERG_CATALOG__DEFAULT__S3__ACCESS_KEY_ID: admin
+      PYICEBERG_CATALOG__DEFAULT__S3__SECRET_ACCESS_KEY: password123
+      AWS_REGION: us-east-1
+      SEED_SCALE: "1.0"
+
+  # Graph scoring service (microservice) — reads FEATURES_READY, writes SCORED + toxicity.
+  # Own profile: start it after the lake has data & tables (Stage 2 + scored/accounts tables).
+  scoring:
+    build: ../src/ml
+    image: aml/scoring:latest
+    profiles: ["scoring"]
+    depends_on:
+      hive-metastore: {condition: service_started}
+    environment:
+      PYICEBERG_CATALOG__DEFAULT__TYPE: hive
+      PYICEBERG_CATALOG__DEFAULT__URI: thrift://hive-metastore:9083
+      PYICEBERG_CATALOG__DEFAULT__WAREHOUSE: s3://warehouse/
+      PYICEBERG_CATALOG__DEFAULT__S3__ENDPOINT: http://minio:9000
+      PYICEBERG_CATALOG__DEFAULT__S3__ACCESS_KEY_ID: admin
+      PYICEBERG_CATALOG__DEFAULT__S3__SECRET_ACCESS_KEY: password123
+      AWS_REGION: us-east-1
+    volumes:
+      - ../src/ml/artifacts:/artifacts:ro     # trained model (train_temporal.py output)
+      - scoring-state:/state                   # bookmark / processed-offset
+
   # Compliance dashboard UI (microservice) — http://localhost:8501
   dashboard:
     build: ../src/ui
@@ -141,12 +182,12 @@ services:
       trino: {condition: service_started}
     ports: ["8501:8501"]
     environment:
-      # demo default: read local scored parquet. For the lake: DASH_SOURCE=trino + TRINO_HOST=trino
-      DASH_SOURCE: parquet
-      DATA_DIR: /data
+      # reads the lake via Trino (real pipeline). For offline/no-stack demo: DASH_SOURCE=parquet
+      DASH_SOURCE: trino
       TRINO_HOST: trino
+      DATA_DIR: /data
     volumes:
-      - ../data:/data:ro
+      - ../data:/data:ro     # only used if DASH_SOURCE=parquet (offline fallback)
 
   kafka:
     image: apache/kafka:3.9.0
@@ -168,3 +209,4 @@ volumes:
   minio-data:
   pg-data:
   hive-aux:
+  scoring-state:

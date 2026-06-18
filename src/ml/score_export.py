@@ -32,7 +32,7 @@ def main():
     x = torch.tensor((node_x - mean) / std)
     src = torch.tensor(tx["source_account"].map(idx).to_numpy(), dtype=torch.long)
     dst = torch.tensor(tx["target_account"].map(idx).to_numpy(), dtype=torch.long)
-    ef = torch.tensor(build_edge_features(tx))
+    ef = torch.tensor(build_edge_features(tx, meta.get("edge_logamt_mean"), meta.get("edge_logamt_std")))
     ts = torch.tensor(tx["ts"].to_numpy(), dtype=torch.float32); ts = (ts - ts.min()) / 86400.0
 
     model = TGNLite(len(accounts), node_x.shape[1], ef.shape[1], mem=meta["mem"])

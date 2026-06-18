@@ -63,7 +63,8 @@ def main():
         x = torch.zeros_like(x)              # ABLATION: model sees no aggregate features
     src = torch.tensor(tx["source_account"].map(idx).to_numpy(), dtype=torch.long)
     dst = torch.tensor(tx["target_account"].map(idx).to_numpy(), dtype=torch.long)
-    ef = torch.tensor(build_edge_features(tx))
+    _la = np.log1p(tx["amount"].to_numpy()); e_mean, e_std = float(_la.mean()), float(_la.std())
+    ef = torch.tensor(build_edge_features(tx, e_mean, e_std))
     ts = torch.tensor(tx["ts"].to_numpy(), dtype=torch.float32); ts = (ts - ts.min()) / 86400.0
     y = torch.tensor(tx["is_fraud"].to_numpy(), dtype=torch.float32)
     ynode = torch.tensor(accounts["is_fraud"].to_numpy(), dtype=torch.float32)   # dropper labels
@@ -111,7 +112,8 @@ def main():
     if not args.ablate_node_features:
         torch.save(model.state_dict(), out / "tgnlite.pt")
         json.dump({"node_feature_names": NODE_FEATURE_NAMES, "edge_feature_names": EDGE_FEATURE_NAMES,
-                   "node_mean": mean.tolist(), "node_std": std.tolist(), "mem": args.mem},
+                   "node_mean": mean.tolist(), "node_std": std.tolist(), "mem": args.mem,
+                   "edge_logamt_mean": e_mean, "edge_logamt_std": e_std},
                   open(out / "tgnlite_meta.json", "w"), indent=2)
         print(f"saved -> {out}/tgnlite.pt")
 

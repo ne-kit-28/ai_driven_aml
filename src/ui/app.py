@@ -77,6 +77,21 @@ blocked = load_blocked()
 LEGEND = ("🔴 high toxicity (likely dropper/mule) · 🟢 low (legit) · "
           "edge thickness/red = transaction risk · ⛔ blocked")
 
+# lake readiness probe (Trino mode): tables may not exist / be scored yet
+try:
+    _probe = src.top_alerts(1)
+except Exception as e:
+    st.error("Cannot read the lake via Trino. Did the **seed** and **scoring** services run?\n\n"
+             "Expected tables `scored_transactions` and `accounts_state`.\n\n"
+             f"```\n{e}\n```")
+    st.stop()
+if _probe.empty:
+    st.info("No accounts in the lake yet — run the **seed** service first.")
+    st.stop()
+if "toxicity" in _probe and bool(_probe["toxicity"].isna().all()):
+    st.warning("Accounts are seeded but not scored yet — start the **scoring** service "
+               "(`docker compose --profile scoring up -d scoring`).")
+
 # ============================ INVESTIGATE ============================
 if mode == "🔎 Investigate account":
     default_acct = src.top_alerts(1)["account_id"].iloc[0]

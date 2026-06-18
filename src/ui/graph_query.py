@@ -77,13 +77,13 @@ class TrinoSource:
 
     @property
     def ts_range(self):
-        r = self._q("SELECT min(ts), max(ts) FROM transactions")
+        r = self._q("SELECT min(ts), max(ts) FROM scored_transactions")
         return int(r.iloc[0, 0]), int(r.iloc[0, 1])
 
     def incident_edges(self, accts):
         accts = list(accts); ph = ",".join(["?"] * len(accts))
         sql = (f"SELECT tx_id, source_account, target_account, amount, ts, risk_score "
-               f"FROM transactions WHERE source_account IN ({ph}) OR target_account IN ({ph})")
+               f"FROM scored_transactions WHERE source_account IN ({ph}) OR target_account IN ({ph})")
         return self._q(sql, accts + accts)
 
     def node_attrs(self, accts):
@@ -98,11 +98,11 @@ class TrinoSource:
     def recent(self, min_risk=0.0, limit=200, only_susp=True):
         where = f"WHERE risk_score >= {min_risk}" if only_susp else ""
         return self._q(f"SELECT tx_id, source_account, target_account, amount, ts, risk_score "
-                       f"FROM transactions {where} ORDER BY ts DESC LIMIT {limit}")
+                       f"FROM scored_transactions {where} ORDER BY ts DESC LIMIT {limit}")
 
     def top_risk_edges(self, n=60):
         return self._q(f"SELECT tx_id, source_account, target_account, amount, ts, risk_score "
-                       f"FROM transactions ORDER BY risk_score DESC LIMIT {n}")
+                       f"FROM scored_transactions ORDER BY risk_score DESC LIMIT {n}")
 
     def has_account(self, a):
         return not self._q("SELECT 1 FROM accounts_state WHERE account_id = ? LIMIT 1", [a]).empty

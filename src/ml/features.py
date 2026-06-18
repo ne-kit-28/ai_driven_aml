@@ -57,9 +57,12 @@ def build_node_features(accounts: pd.DataFrame, tx: pd.DataFrame):
     return df[NODE_FEATURE_NAMES].to_numpy(dtype=np.float32), idx
 
 
-def build_edge_features(tx: pd.DataFrame) -> np.ndarray:
+def build_edge_features(tx: pd.DataFrame, logamt_mean=None, logamt_std=None) -> np.ndarray:
+    # Pass fixed (training) stats at inference; falls back to batch stats for offline full-data builds.
     amt = tx["amount"].to_numpy(dtype=np.float64)
     log_amt = np.log1p(amt)
     band = tx["amount"].between(STRUCT_LO, STRUCT_HI).to_numpy(dtype=np.float32)
-    z = (log_amt - log_amt.mean()) / (log_amt.std() + 1e-9)
+    mu = log_amt.mean() if logamt_mean is None else logamt_mean
+    sd = log_amt.std() if logamt_std is None else logamt_std
+    z = (log_amt - mu) / (sd + 1e-9)
     return np.stack([log_amt, band, z], axis=1).astype(np.float32)

@@ -60,14 +60,19 @@ class World:
                                typology_id=typology_id, is_fraud=int(fraud), ml_status="PENDING"))
 
     def contaminate(self, fraud_acc, day):
-        """A legit account interacts with a fraud account (label stays legit edge)."""
-        if self.legit_ids and self.rng.random() < 0.5:
-            other = self.rng.choice(self.legit_ids)
-            amt = float(np.clip(self.nprng.lognormal(6.2, 1.0), 5, 40_000))
-            if self.rng.random() < 0.5:
-                self.tx(other, fraud_acc, amt, day)   # legit pays the mule
-            else:
-                self.tx(fraud_acc, other, amt, day)   # mule pays out legitimately (noise)
+        """Legit accounts interact with a fraud account (labels stay legit).
+        Heavier contamination on purpose: many legit nodes receive from 'red'
+        accounts, so the model learns that one inbound from a mule != dropper."""
+        if not self.legit_ids:
+            return
+        for _ in range(self.rng.randint(1, 3)):
+            if self.rng.random() < 0.8:
+                other = self.rng.choice(self.legit_ids)
+                amt = float(np.clip(self.nprng.lognormal(6.2, 1.1), 5, 40_000))
+                if self.rng.random() < 0.5:
+                    self.tx(other, fraud_acc, amt, day)   # legit pays the mule
+                else:
+                    self.tx(fraud_acc, other, amt, day)   # mule pays out to legit (noise)
 
 
 def _legit_amount(w: World) -> float:
@@ -170,20 +175,20 @@ def inject_layering_chain(w, tid, length, day, amount):
 def build(seed: int, scale: float):
     rng = random.Random(seed); nprng = np.random.default_rng(seed)
     w = World(rng=rng, nprng=nprng); horizon = 30
-    inject_background(w, int(2000 * scale), int(30 * scale), int(22000 * scale), horizon)
+    inject_background(w, int(2500 * scale), int(30 * scale), int(28000 * scale), horizon)
     # legit look-alikes for fraud structure (defeat the degree/fan-in/fan-out giveaway)
-    for _ in range(int(60 * scale)):
+    for _ in range(int(80 * scale)):
         inject_legit_payroll(w, rng.randint(8, 20))
-    for _ in range(int(60 * scale)):
+    for _ in range(int(80 * scale)):
         inject_legit_merchant(w, rng.randint(6, 18))
     t = 0
-    for _ in range(int(8 * scale)):
+    for _ in range(int(12 * scale)):
         t += 1; inject_transit_ring(w, f"T1_ring_{t}", rng.randint(4, 8), rng.randint(0, horizon), rng.uniform(5e4, 2e5))
-    for _ in range(int(6 * scale)):
+    for _ in range(int(10 * scale)):
         t += 1; inject_smurfing(w, f"T2_smurf_{t}", rng.randint(8, 20), rng.randint(0, horizon), rng.uniform(8e4, 3e5))
-    for _ in range(int(6 * scale)):
+    for _ in range(int(10 * scale)):
         t += 1; inject_fan_in_cashout(w, f"T3_fanin_{t}", rng.randint(5, 15), rng.randint(0, horizon), rng.uniform(3e3, 1.5e4))
-    for _ in range(int(3 * scale)):
+    for _ in range(int(5 * scale)):
         t += 1; inject_layering_chain(w, f"T4_chain_{t}", rng.randint(20, 100), rng.randint(0, horizon), rng.uniform(5e4, 2e5))
     accounts = pd.DataFrame(w.accounts.values())
     txs = pd.DataFrame(w.edges).sort_values("ts").reset_index(drop=True)

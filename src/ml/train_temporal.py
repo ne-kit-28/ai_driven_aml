@@ -73,9 +73,10 @@ def main():
     order = torch.arange(n); tr, te = order[:split], order[split:]
 
     model = TGNLite(len(accounts), node_x.shape[1], ef.shape[1], mem=args.mem)
-    opt = torch.optim.Adam(model.parameters(), lr=3e-3, weight_decay=1e-5)
-    ew = torch.tensor([(y[tr] == 0).sum() / max((y[tr] == 1).sum(), 1)])
-    nw = torch.tensor([(ynode == 0).sum() / max((ynode == 1).sum(), 1)])
+    opt = torch.optim.Adam(model.parameters(), lr=2e-3, weight_decay=5e-4)   # more reg -> less overconfident
+    # cap class weights so logits don't blow up to ±50 (saturated 0/1 scores)
+    ew = torch.tensor([min(float((y[tr] == 0).sum() / max((y[tr] == 1).sum(), 1)), 10.0)])
+    nw = torch.tensor([min(float((ynode == 0).sum() / max((ynode == 1).sum(), 1)), 3.0)])
     edge_loss = nn.BCEWithLogitsLoss(pos_weight=ew)
     node_loss = nn.BCEWithLogitsLoss(pos_weight=nw)
 
@@ -113,7 +114,8 @@ def main():
         torch.save(model.state_dict(), out / "tgnlite.pt")
         json.dump({"node_feature_names": NODE_FEATURE_NAMES, "edge_feature_names": EDGE_FEATURE_NAMES,
                    "node_mean": mean.tolist(), "node_std": std.tolist(), "mem": args.mem,
-                   "edge_logamt_mean": e_mean, "edge_logamt_std": e_std},
+                   "edge_logamt_mean": e_mean, "edge_logamt_std": e_std,
+                   "node_temp": 8.0, "edge_temp": 1.0},   # temperature-scale outputs -> spread, not 0/1
                   open(out / "tgnlite_meta.json", "w"), indent=2)
         print(f"saved -> {out}/tgnlite.pt")
 

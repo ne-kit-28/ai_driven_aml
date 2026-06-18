@@ -111,6 +111,7 @@ def run(io, artifacts, loop, snapshot_every):
     model.load_state_dict(torch.load(f"{artifacts}/tgnlite.pt")); model.eval()
 
     e_mean, e_std = meta.get("edge_logamt_mean"), meta.get("edge_logamt_std")
+    nt, et = meta.get("node_temp", 1.0), meta.get("edge_temp", 1.0)   # temperature scaling
     mem = model.memory; prev = None; n_batches = 0
     for batch in io.batches(loop):
         if batch.empty:
@@ -122,7 +123,7 @@ def run(io, artifacts, loop, snapshot_every):
         ts_n = (ts - io.ts_offset) / 86400.0
         with torch.no_grad():
             mem_in = mem if prev is None else model.updated_memory(mem, *prev, x)
-            risk = torch.sigmoid(model.score_edges(mem_in, src, dst, ef, x)).numpy()
+            risk = torch.sigmoid(model.score_edges(mem_in, src, dst, ef, x) / et).numpy()
             mem = mem_in.detach(); model.memory = mem
             prev = (src, dst, ts_n, ef)
         out = batch.assign(risk_score=risk, ml_status="SCORED")
@@ -130,12 +131,12 @@ def run(io, artifacts, loop, snapshot_every):
         n_batches += 1
         if n_batches % snapshot_every == 0:
             with torch.no_grad():
-                tox = torch.sigmoid(model.score_nodes(model.memory, x)).numpy()
+                tox = torch.sigmoid(model.score_nodes(model.memory, x) / nt).numpy()
             io.snapshot_accounts(accounts, tox, model.memory.numpy())
         print(f"batch {n_batches}: scored {len(out)} tx | mean risk {risk.mean():.3f}", flush=True)
 
     with torch.no_grad():
-        tox = torch.sigmoid(model.score_nodes(model.memory, x)).numpy()
+        tox = torch.sigmoid(model.score_nodes(model.memory, x) / nt).numpy()
     io.snapshot_accounts(accounts, tox, model.memory.numpy())
     print(f"done: {n_batches} batches", flush=True)
 

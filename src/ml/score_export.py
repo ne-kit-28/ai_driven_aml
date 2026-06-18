@@ -38,15 +38,16 @@ def main():
     model = TGNLite(len(accounts), node_x.shape[1], ef.shape[1], mem=meta["mem"])
     model.load_state_dict(torch.load(f"{args.artifacts}/tgnlite.pt")); model.eval()
 
+    nt, et = meta.get("node_temp", 1.0), meta.get("edge_temp", 1.0)   # temperature scaling
     probs = torch.zeros(len(tx)); prev = None; mem = model.memory
     with torch.no_grad():
         for i in range(0, len(tx), args.bs):
             b = slice(i, i + args.bs)
             mem_in = mem if prev is None else model.updated_memory(mem, *prev, x)
-            probs[b] = torch.sigmoid(model.score_edges(mem_in, src[b], dst[b], ef[b], x))
+            probs[b] = torch.sigmoid(model.score_edges(mem_in, src[b], dst[b], ef[b], x) / et)
             mem = mem_in.detach(); model.memory = mem
             prev = (src[b], dst[b], ts[b], ef[b])
-        toxicity = torch.sigmoid(model.score_nodes(model.memory, x)).numpy()
+        toxicity = torch.sigmoid(model.score_nodes(model.memory, x) / nt).numpy()
 
     tx = tx.assign(risk_score=probs.numpy())
     accounts = accounts.assign(toxicity=toxicity)

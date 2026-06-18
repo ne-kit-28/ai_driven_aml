@@ -36,7 +36,7 @@ def main():
     ts = torch.tensor(tx["ts"].to_numpy(), dtype=torch.float32); ts = (ts - ts.min()) / 86400.0
 
     model = TGNLite(len(accounts), node_x.shape[1], ef.shape[1], mem=meta["mem"])
-    model.load_state_dict(torch.load(f"{args.artifacts}/tgnlite.pt")); model.eval()
+    model.load_state_dict(torch.load(f"{args.artifacts}/tgnlite.pt", weights_only=True)); model.eval()
 
     nt, et = meta.get("node_temp", 1.0), meta.get("edge_temp", 1.0)   # temperature scaling
     probs = torch.zeros(len(tx)); prev = None; mem = model.memory

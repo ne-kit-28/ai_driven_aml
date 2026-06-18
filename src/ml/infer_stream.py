@@ -81,10 +81,13 @@ class IcebergIO:
             df = self.tx_t.scan(row_filter=EqualTo("ml_status", "FEATURES_READY")).to_pandas()
             last = float(self.bm.read_text()) if self.bm.exists() else -1
             df = df[df.ts > last].sort_values("ts")
+            print(f"[reader] FEATURES_READY new (ts>{last:.0f}): {len(df)} rows", flush=True)
             for i in range(0, len(df), self.bs):
                 yield df.iloc[i:i + self.bs][TXCOLS].copy()
             if not loop:
                 break
+            print(f"[reader] idle, sleeping {self._interval}s "
+                  f"(no new FEATURES_READY — run seed, or reset the bookmark)", flush=True)
             time.sleep(self._interval)
 
     def write_tx(self, df):
@@ -108,7 +111,7 @@ def run(io, artifacts, loop, snapshot_every):
     x = torch.tensor((node_x - mean) / std)
 
     model = TGNLite(len(idx), node_x.shape[1], len(meta["edge_feature_names"]), mem=meta["mem"])
-    model.load_state_dict(torch.load(f"{artifacts}/tgnlite.pt")); model.eval()
+    model.load_state_dict(torch.load(f"{artifacts}/tgnlite.pt", weights_only=True)); model.eval()
 
     e_mean, e_std = meta.get("edge_logamt_mean"), meta.get("edge_logamt_std")
     nt, et = meta.get("node_temp", 1.0), meta.get("edge_temp", 1.0)   # temperature scaling

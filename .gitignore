@@ -2,6 +2,10 @@ __pycache__/
 *.pyc
 .ipynb_checkpoints/
 .DS_Store
-# generated synthetic data (regenerate via src/generator/generate_graph.py)
+# generated, regenerable artifacts
 data/*.parquet
+data/*.png
+data/*.html
+data/blocklist.parquet
+src/ml/artifacts/
 *.zip

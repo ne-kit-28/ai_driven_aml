@@ -1,0 +1,140 @@
+"""
+AML compliance dashboard (microservice UI). Two modes:
+  🔎 Investigate — enter a wallet id, render its ego-graph to a chosen depth,
+                   inspect its red (high-risk) transactions, and BLOCK it.
+  📡 Monitor     — feed of the latest suspicious transactions across the lake.
+
+  DASH_SOURCE=parquet|trino   DATA_DIR=...   TRINO_HOST=trino
+  streamlit run app.py --server.port 8501 --server.address 0.0.0.0
+"""
+import os
+import tempfile
+from pathlib import Path
+
+import pandas as pd
+import streamlit as st
+import streamlit.components.v1 as components
+
+from graph_query import ParquetSource, TrinoSource, trace, build_network
+
+st.set_page_config(page_title="AML Graph", layout="wide", page_icon="🕸️")
+BLOCKLIST = Path(os.environ.get("DATA_DIR", "data")) / "blocklist.parquet"
+
+
+@st.cache_resource
+def get_source():
+    if os.environ.get("DASH_SOURCE", "parquet") == "trino":
+        return TrinoSource(host=os.environ.get("TRINO_HOST", "trino"))
+    return ParquetSource(os.environ.get("DATA_DIR", "data"))
+
+
+def load_blocked() -> set:
+    if BLOCKLIST.exists():
+        return set(pd.read_parquet(BLOCKLIST)["account_id"])
+    return set()
+
+
+def block_account(account, reason, officer="officer"):
+    row = pd.DataFrame([{"account_id": account, "reason": reason, "officer": officer,
+                         "ts": pd.Timestamp.utcnow().isoformat()}])
+    df = pd.concat([pd.read_parquet(BLOCKLIST), row]) if BLOCKLIST.exists() else row
+    df.drop_duplicates("account_id", keep="last").to_parquet(BLOCKLIST, index=False)
+
+
+def embed(net):
+    with tempfile.NamedTemporaryFile("w", suffix=".html", delete=False) as f:
+        net.write_html(f.name, notebook=False)
+        components.html(open(f.name).read(), height=730, scrolling=False)
+
+
+src = get_source()
+st.sidebar.title("🕸️ AML Graph")
+mode = st.sidebar.radio("Mode", ["🔎 Investigate account", "📡 Monitor suspicious"], key="mode")
+
+# global live-replay (simulate real-time arrival)
+if st.sidebar.toggle("▶ Live replay (real-time sim)", value=False):
+    from streamlit_autorefresh import st_autorefresh
+    st_autorefresh(interval=2500, key="tick")
+    t0, t1 = src.ts_range; step = max(1, (t1 - t0) // 40)
+    st.session_state["cursor"] = min(t1, st.session_state.get("cursor", t0) + step)
+    src.max_ts = st.session_state["cursor"]
+    st.sidebar.progress((src.max_ts - t0) / max(1, t1 - t0), text="stream position")
+else:
+    src.max_ts = None
+
+blocked = load_blocked()
+LEGEND = ("🔴 high toxicity (likely dropper/mule) · 🟢 low (legit) · "
+          "edge thickness/red = transaction risk · ⛔ blocked")
+
+# ============================ INVESTIGATE ============================
+if mode == "🔎 Investigate account":
+    default_acct = src.top_alerts(1)["account_id"].iloc[0]
+    acct = st.sidebar.text_input("Wallet / account id", key="acct",
+                                 value=st.session_state.get("acct", default_acct)).strip()
+    depth = st.sidebar.number_input("Trace depth (hops)", 1, 15, 4,
+                                    help="left empty -> default 4")
+    with st.sidebar.expander("advanced"):
+        fanout = st.slider("edges per node (by risk)", 2, 15, 6)
+        max_nodes = st.slider("max nodes", 20, 200, 80)
+
+    if not src.has_account(acct):
+        st.error(f"account `{acct}` not found"); st.stop()
+
+    st.markdown(f"### 🔎 `{acct}` — ego-network, depth {depth}")
+    edges, attrs = trace(src, acct, depth=int(depth), fanout=fanout, max_nodes=max_nodes)
+    net, g = build_network(edges, attrs, alert=acct, blocked=blocked)
+
+    left, right = st.columns([4, 1.3])
+    with left:
+        embed(net); st.caption(LEGEND)
+    with right:
+        tox = float(attrs.loc[acct, "toxicity"] or 0) if acct in attrs.index else 0.0
+        st.metric("dropper toxicity", f"{tox:.2f}")
+        st.metric("nodes / tx in view", f"{g.number_of_nodes()} / {g.number_of_edges()}")
+        if acct in blocked:
+            st.error("⛔ already BLOCKED")
+        else:
+            reason = st.text_input("block reason", "suspected dropper")
+            if st.button("⛔ Block account", type="primary", use_container_width=True):
+                block_account(acct, reason); st.success(f"{acct} blocked"); st.rerun()
+
+    st.markdown("#### Transactions of this account (by risk)")
+    inc = src.incident_edges({acct}).sort_values("risk_score", ascending=False).head(50).copy()
+    inc["ts"] = pd.to_datetime(inc["ts"], unit="s")
+    st.dataframe(inc.rename(columns={"source_account": "from", "target_account": "to",
+                                     "risk_score": "risk"}), hide_index=True, height=240)
+
+# ============================ MONITOR ============================
+else:
+    st.markdown("### 📡 Latest suspicious transactions")
+    c = st.columns(4)
+    thr = c[0].slider("risk threshold", 0.0, 1.0, 0.5, 0.05)
+    limit = c[1].number_input("rows", 20, 2000, 200, step=20)
+    only_susp = not c[2].toggle("show ALL (not just suspicious)", value=False)
+    show_graph = c[3].toggle("show suspicious network", value=True)
+
+    feed = src.recent(min_risk=thr, limit=int(limit), only_susp=only_susp).copy()
+    susp_n = int((src.recent(min_risk=thr, limit=100000, only_susp=True)).shape[0])
+    m = st.columns(3)
+    m[0].metric("suspicious tx (≥ thr)", susp_n)
+    m[1].metric("rows shown", len(feed))
+    top = src.top_alerts(1)
+    m[2].metric("top toxic account", f"{top['account_id'].iloc[0][-5:]} · {top['toxicity'].iloc[0]:.2f}")
+
+    disp = feed.copy(); disp["ts"] = pd.to_datetime(disp["ts"], unit="s")
+    st.dataframe(disp.rename(columns={"source_account": "from", "target_account": "to",
+                                      "risk_score": "risk"}), hide_index=True, height=300)
+
+    # jump to investigate any account from the feed
+    accts = sorted(set(feed["source_account"]) | set(feed["target_account"]))
+    jc = st.columns([3, 1])
+    pick = jc[0].selectbox("investigate account from feed", accts) if accts else None
+    if pick and jc[1].button("🔎 Investigate", use_container_width=True):
+        st.session_state["acct"] = pick; st.session_state["mode"] = "🔎 Investigate account"; st.rerun()
+
+    if show_graph and not feed.empty:
+        ed = src.top_risk_edges(80)
+        nodes = set(ed.source_account) | set(ed.target_account)
+        net, g = build_network(ed, src.node_attrs(nodes), alert=None, blocked=blocked)
+        st.markdown("#### Top suspicious network")
+        embed(net); st.caption(LEGEND)

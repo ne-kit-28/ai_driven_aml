@@ -132,6 +132,22 @@ services:
       SPARK_WORKER_MEMORY: "4g"
     ports: ["8082:8081"]   # worker UI (host 8082)
 
+  # Compliance dashboard UI (microservice) — http://localhost:8501
+  dashboard:
+    build: ../src/ui
+    image: aml/dashboard:latest
+    profiles: ["core"]
+    depends_on:
+      trino: {condition: service_started}
+    ports: ["8501:8501"]
+    environment:
+      # demo default: read local scored parquet. For the lake: DASH_SOURCE=trino + TRINO_HOST=trino
+      DASH_SOURCE: parquet
+      DATA_DIR: /data
+      TRINO_HOST: trino
+    volumes:
+      - ../data:/data:ro
+
   kafka:
     image: apache/kafka:3.9.0
     profiles: ["streaming"]

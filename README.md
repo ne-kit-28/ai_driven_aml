@@ -18,7 +18,8 @@ the next few cycles.
   account memory grows as new accounts appear.
 - Human-in-the-loop console: ego-graph exploration, in/out flow analysis, one
   click block, live monitoring, and recall against ground truth.
-- Blocklist feedback loop that lets contaminated legitimate accounts recover.
+- Blocklist feedback loop that lets contaminated legitimate accounts recover;
+  block a single account or a whole fraud chain at once (legit hubs excluded).
 - LLM explanations over the local subgraph (GraphRAG) that separate hubs from
   mules and avoid guilt-by-association.
 
@@ -77,6 +78,6 @@ ground-truth labels for evaluation.
 ## Status
 
 The offline (Parquet/DuckDB) path is verified. The Spark/Kafka/Iceberg live
-path is built but still needs on-stand testing. Open items: chain-level
-blocking, time-series verification, gradual memory decay after a block, and
-horizontal scale-out for high throughput.
+path is built but still needs on-stand testing. Open items: time-series
+verification, gradual memory decay after a block, and horizontal scale-out for
+high throughput.

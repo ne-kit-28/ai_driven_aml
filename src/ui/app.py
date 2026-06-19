@@ -18,6 +18,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from graph_query import ParquetSource, TrinoSource, trace, build_network
+from chain_select import select_chain
 from llm_explain import build_evidence, build_flow_evidence, explain, FLOW_PROMPT
 
 st.set_page_config(page_title="AML Graph", layout="wide", page_icon="🕸️")
@@ -37,23 +38,32 @@ def load_blocked() -> set:
     return set()
 
 
-def block_account(account, reason, officer="officer"):
+def block_accounts(accounts, reason="suspected fraud", officer="officer"):
+    accounts = list(dict.fromkeys(a for a in accounts if a))   # dedup, keep order
+    if not accounts:
+        return
     # local record (offline mode)
-    row = pd.DataFrame([{"account_id": account, "reason": reason, "officer": officer,
-                         "ts": pd.Timestamp.utcnow().isoformat()}])
-    df = pd.concat([pd.read_parquet(BLOCKLIST), row]) if BLOCKLIST.exists() else row
+    now = pd.Timestamp.utcnow().isoformat()
+    rows = pd.DataFrame([{"account_id": a, "reason": reason, "officer": officer, "ts": now}
+                         for a in accounts])
+    df = pd.concat([pd.read_parquet(BLOCKLIST), rows]) if BLOCKLIST.exists() else rows
     df.drop_duplicates("account_id", keep="last").to_parquet(BLOCKLIST, index=False)
-    # publish to the blocklist bus: producer stops/replaces it, ETL/scoring exclude its edges
+    # publish to the blocklist bus: producer stops/replaces them, ETL/scoring exclude their edges
     bs = os.environ.get("KAFKA_BOOTSTRAP")
     if bs:
         try:
             from kafka import KafkaProducer
             p = KafkaProducer(bootstrap_servers=bs, api_version_auto_timeout_ms=5000,
                               value_serializer=lambda v: json.dumps(v).encode())
-            p.send("blocklist", {"account_id": account, "reason": reason, "ts": int(time.time())})
+            for a in accounts:
+                p.send("blocklist", {"account_id": a, "reason": reason, "ts": int(time.time())})
             p.flush(); p.close()
         except Exception as e:
             st.warning(f"blocklist publish failed: {e}")
+
+
+def block_account(account, reason="suspected dropper", officer="officer"):
+    block_accounts([account], reason, officer)
 
 
 def embed(net):
@@ -147,6 +157,19 @@ if mode == "🔎 Investigate account":
             reason = st.text_input("block reason", "suspected dropper")
             if st.button("⛔ Block account", type="primary", use_container_width=True):
                 block_account(acct, reason); st.success(f"{acct} blocked"); st.rerun()
+
+        st.divider()
+        st.markdown("**⛓ Block whole chain**")
+        chain_thr = st.slider("chain: include nodes with toxicity ≥", 0.0, 1.0, 0.5, 0.05,
+                              key="chain_thr", help="legit hubs are always excluded")
+        chain = select_chain(edges, attrs, acct, tox_threshold=chain_thr)
+        to_block = sorted(chain - blocked)
+        st.caption(f"chain: **{len(chain)}** accounts · **{len(to_block)}** not yet blocked")
+        with st.expander("chain members"):
+            st.write(to_block or "—")
+        if to_block and st.button(f"⛔ Block chain ({len(to_block)})", use_container_width=True):
+            block_accounts(to_block, "suspected fraud chain")
+            st.success(f"blocked {len(to_block)} accounts in the chain"); st.rerun()
 
     st.markdown("#### Transactions of this account (by risk)")
     incident = src.incident_edges({acct})

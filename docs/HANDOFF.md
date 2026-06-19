@@ -96,7 +96,7 @@ Two paths exist — **don't mix them**:
 - LLM GraphRAG explanation (OpenAI-compatible, key in `.env`), prompt distinguishes hub/mule and avoids guilt-by-association.
 
 ## 7. TODO / known gaps
-- **Chain/cluster block** (block a whole fraud chain at once) — deferred, not built.
+- **Chain/cluster block** (block a whole fraud chain at once) — built: Investigate → "Block whole chain" (`src/ui/chain_select.py`, legit hubs excluded).
 - **Verification "before/after health"** is current-snapshot only (no time series of legit toxicity around a block).
 - **Memory decay after block**: node features clean up immediately, but h_v memory decays over several cycles → toxicity drops gradually, not instantly.
 - Spark/Kafka/Iceberg live path is **written but not run in the dev sandbox** (no Docker there) — needs on-stand testing; offline (parquet) path is verified.

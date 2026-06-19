@@ -219,6 +219,20 @@ services:
     depends_on: [kafka]
     command: ["python", "producer.py", "--bootstrap", "kafka:9092", "--rate", "5", "--case-every", "45"]
 
+  # Side test source: replay the IBM AML (AMLWorld) dataset into Kafka tx_raw.
+  # Put the Kaggle CSVs in data/raw/ (mounted at /raw). Synthetic producer stays intact.
+  ibm-replay:
+    build:
+      context: ../src
+      dockerfile: ingest/Dockerfile
+    image: aml/producer:latest
+    profiles: ["ibm"]
+    depends_on: [kafka]
+    volumes:
+      - ../data/raw:/raw:ro
+    command: ["python", "ibm_replay.py", "--csv", "/raw/HI-Small_Trans.csv",
+              "--patterns", "/raw/HI-Small_Patterns.txt", "--bootstrap", "kafka:9092", "--rate", "20"]
+
   kafka:
     image: apache/kafka:3.9.0
     profiles: ["streaming"]

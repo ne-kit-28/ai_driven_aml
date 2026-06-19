@@ -75,7 +75,8 @@ except FileNotFoundError:
     st.stop()
 
 st.sidebar.title("🕸️ AML Graph")
-mode = st.sidebar.radio("Mode", ["🔎 Investigate account", "📡 Monitor suspicious"], key="mode")
+mode = st.sidebar.radio("Mode", ["🔎 Investigate account", "🚩 Suspicious nodes",
+                                 "📡 Monitor suspicious", "✅ Verification"], key="mode")
 
 # global live-replay (simulate real-time arrival)
 if st.sidebar.toggle("▶ Live replay (real-time sim)", value=False):
@@ -172,6 +173,53 @@ if mode == "🔎 Investigate account":
         st.markdown("**Разбор потоков (вход/выход):**"); st.markdown(st.session_state["flow"])
     with st.expander("улики SAR, отправленные модели"):
         st.code(build_evidence(acct, edges, attrs, incident))
+
+# ============================ SUSPICIOUS NODES ============================
+elif mode == "🚩 Suspicious nodes":
+    st.markdown("### 🚩 Suspicious accounts (by toxicity)")
+    if st.toggle("🔴 Live (auto-refresh, 5s)", value=False, key="nodes_live"):
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=5000, key="nodes_tick")
+    thr = st.slider("toxicity threshold", 0.0, 1.0, 0.5, 0.05)
+    acc = src.scored_accounts_full()
+    acc = acc[acc.toxicity.notna()]
+    flagged = acc[acc.toxicity >= thr].sort_values("toxicity", ascending=False)
+    m = st.columns(3)
+    m[0].metric("flagged accounts (≥ thr)", len(flagged))
+    m[1].metric("blocked", len(blocked))
+    m[2].metric("total scored", len(acc))
+    st.dataframe(flagged[["account_id", "fraud_role", "is_fraud", "toxicity"]].head(200),
+                 hide_index=True, height=320)
+    cpick = st.columns([3, 1, 1])
+    pick = cpick[0].selectbox("account", flagged["account_id"].tolist()) if len(flagged) else None
+    if pick and cpick[1].button("🔎 Investigate"):
+        st.session_state["acct"] = pick; st.session_state["mode"] = "🔎 Investigate account"; st.rerun()
+    if pick and cpick[2].button("⛔ Block", type="primary"):
+        block_account(pick, "suspected dropper"); st.success(f"{pick} blocked → blocklist"); st.rerun()
+
+# ============================ VERIFICATION ============================
+elif mode == "✅ Verification":
+    st.markdown("### ✅ Verification — model vs ground truth (synthetic)")
+    thr = st.slider("toxicity threshold", 0.0, 1.0, 0.5, 0.05)
+    acc = src.scored_accounts_full()
+    acc = acc[acc.toxicity.notna()]
+    if acc.empty:
+        st.info("Нет скоров — запусти ETL + scoring."); st.stop()
+    fr, le = acc[acc.is_fraud == 1], acc[acc.is_fraud == 0]
+    m = st.columns(4)
+    m[0].metric("recall (fraud ≥ thr)", f"{(fr.toxicity >= thr).mean():.2f}" if len(fr) else "—")
+    m[1].metric("fraud mean toxicity", f"{fr.toxicity.mean():.2f}" if len(fr) else "—")
+    m[2].metric("legit mean toxicity", f"{le.toxicity.mean():.2f}" if len(le) else "—")
+    m[3].metric("blocked", len(blocked))
+    st.markdown("#### Recall по типологиям (инжектированные кейсы)")
+    typ = fr.copy()
+    typ["case"] = typ["typology_id"].fillna("?").str.split("_").str[0]
+    rep = typ.groupby("case").apply(
+        lambda g: pd.Series({"accounts": len(g), "caught(≥thr)": int((g.toxicity >= thr).sum()),
+                             "recall": round((g.toxicity >= thr).mean(), 2),
+                             "max_toxicity": round(g.toxicity.max(), 2)})).reset_index()
+    st.dataframe(rep, hide_index=True)
+    st.caption("Ground-truth = синтетика (is_fraud / typology_id). Recall↑ и legit mean↓ после блокировок = система работает.")
 
 # ============================ MONITOR ============================
 else:

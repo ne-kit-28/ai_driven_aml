@@ -61,6 +61,9 @@ class ParquetSource:
     def has_account(self, a):
         return a in self.acc.index
 
+    def scored_accounts_full(self):
+        return self.acc.reset_index()[["account_id", "is_fraud", "typology_id", "fraud_role", "toxicity"]]
+
 
 class TrinoSource:
     def __init__(self, host="trino", port=8080, user="dashboard",
@@ -121,6 +124,10 @@ class TrinoSource:
 
     def has_account(self, a):
         return not self._q("SELECT 1 FROM accounts_state WHERE account_id = ? LIMIT 1", [a]).empty
+
+    def scored_accounts_full(self):
+        return self._q("SELECT a.account_id, a.is_fraud, a.typology_id, a.fraud_role, s.toxicity "
+                       "FROM accounts_state a LEFT JOIN account_scores s ON a.account_id=s.account_id")
 
 
 def trace(source, alert, depth=4, fanout=6, max_nodes=80):

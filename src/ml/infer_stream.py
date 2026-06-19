@@ -87,12 +87,16 @@ class IcebergIO:
 
     def snapshot_accounts(self, accounts, ids, tox, emb):
         import pyarrow as pa
+        from pyiceberg.io.pyarrow import schema_to_pyarrow
         t = dict(zip(ids, tox)); e = {a: emb[i].tolist() for i, a in enumerate(ids)}
         snap = accounts.copy()
-        snap["toxicity"] = snap["account_id"].map(t)
+        snap["toxicity"] = snap["account_id"].map(t).astype("float64")
         snap["node_embedding"] = snap["account_id"].map(e)
         snap["updated_ts"] = int(time.time())
-        self.acc_t.overwrite(pa.Table.from_pandas(snap, preserve_index=False))
+        # write strictly to the table schema: avoids pyarrow inferring 'null' for all-null columns
+        arrow = schema_to_pyarrow(self.acc_t.schema())
+        snap = snap[[f.name for f in arrow]]
+        self.acc_t.overwrite(pa.Table.from_pandas(snap, schema=arrow, preserve_index=False))
 
 
 # ----------------------------- live state -----------------------------

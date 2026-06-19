@@ -10,6 +10,13 @@ spark = (SparkSession.builder.appName("aml-live-etl")
          .getOrCreate())
 spark.sparkContext.setLogLevel("WARN")
 
+# %% [cell 1b] RESET — run ONCE if tables exist with an OLD schema (e.g. after a seed run).
+# Drops the banking tables so the DDL below recreates them with the live schema
+# (transactions here carries src_opened/dst_opened). WIPES existing data.
+for _t in ["transactions", "accounts_state", "scored_transactions"]:
+    spark.sql(f"DROP TABLE IF EXISTS iceberg.banking.{_t}")
+print("dropped banking tables — run the DDL cell next")
+
 # %% [cell 2] DDL — namespace + tables (idempotent)
 spark.sql("CREATE NAMESPACE IF NOT EXISTS iceberg.banking")
 spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.transactions (

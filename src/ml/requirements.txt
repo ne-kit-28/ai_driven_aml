@@ -1,6 +1,6 @@
 # torch is installed separately (CPU wheel) in the Dockerfile
 torch_geometric==2.6.1
-pandas==2.2.3
+pandas==3.0.3
 pyarrow==17.0.0
 numpy==2.1.3
 pyiceberg[hive,s3fs]==0.8.1

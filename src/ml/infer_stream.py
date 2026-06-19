@@ -84,6 +84,8 @@ class IcebergIO:
     def account_features(self):
         self.acc_t = self.cat.load_table("banking.accounts_state")   # refresh: see ETL's node_features
         acc = self.acc_t.scan().to_pandas()
+        if not len(acc):                              # ETL has not populated accounts yet
+            return [], np.empty((0, 0), np.float32), acc
         node_x = np.stack(acc["node_features"].to_numpy()).astype(np.float32)
         return acc["account_id"].tolist(), node_x, acc
 
@@ -161,6 +163,11 @@ def run(io, artifacts, loop, interval, snapshot_every):
 
     while True:
         ids, node_x, accounts = io.account_features()
+        if not ids:                               # lake not populated by ETL yet — wait, don't crash
+            print("[scoring] no accounts in lake yet; waiting for ETL…", flush=True)
+            if not loop:
+                break
+            time.sleep(interval); continue
         if model is None:
             model = load_model(artifacts, node_x.shape[1], len(meta["edge_feature_names"]), meta["mem"])
         x, N = state.sync(ids, (node_x - mean) / std)
@@ -195,7 +202,8 @@ def run(io, artifacts, loop, interval, snapshot_every):
             break
         time.sleep(interval)
 
-    _snapshot(io, model, state, x, accounts, ids, nt)
+    if model is not None:                         # skip if we never saw any accounts
+        _snapshot(io, model, state, x, accounts, ids, nt)
     print("done.", flush=True)
 
 

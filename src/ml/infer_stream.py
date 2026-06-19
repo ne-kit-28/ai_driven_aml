@@ -20,6 +20,7 @@ import pandas as pd
 import torch
 
 from features import build_node_features, build_edge_features
+from exactly_once import select_unscored, updated_seen
 from stream_model import TGNLite
 
 TXCOLS = ["tx_id", "source_account", "target_account", "amount", "ts"]
@@ -90,14 +91,14 @@ class IcebergIO:
         from pyiceberg.expressions import EqualTo
         self.tx_t = self.cat.load_table("banking.transactions")   # refresh: see new ETL commits
         df = self.tx_t.scan(row_filter=EqualTo("ml_status", "FEATURES_READY")).to_pandas()
-        df = df[~df.tx_id.isin(self.seen)].sort_values("ts")   # only not-yet-scored, any ts order
+        df = select_unscored(df, self.seen).sort_values("ts")   # only not-yet-scored, any ts order
         print(f"[reader] FEATURES_READY unscored: {len(df)} rows", flush=True)
         return df[TXCOLS].copy() if len(df) else pd.DataFrame(columns=TXCOLS)
 
     def write_tx(self, df):
         import pyarrow as pa
         self.scored_t.append(pa.Table.from_pandas(df, preserve_index=False))
-        self.seen.update(df.tx_id.tolist())
+        self.seen = updated_seen(self.seen, df)
 
     def snapshot_accounts(self, accounts, ids, tox, emb):
         import pyarrow as pa

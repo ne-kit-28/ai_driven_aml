@@ -78,7 +78,10 @@ class TrinoSource:
     @property
     def ts_range(self):
         r = self._q("SELECT min(ts), max(ts) FROM scored_transactions")
-        return int(r.iloc[0, 0]), int(r.iloc[0, 1])
+        a, b = r.iloc[0, 0], r.iloc[0, 1]
+        if a is None or b is None:      # no SCORED rows yet
+            return 0, 0
+        return int(a), int(b)
 
     def _ts_clause(self):
         return f" AND ts <= {int(self.max_ts)}" if self.max_ts is not None else ""

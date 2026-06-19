@@ -67,10 +67,15 @@ mode = st.sidebar.radio("Mode", ["🔎 Investigate account", "📡 Monitor suspi
 if st.sidebar.toggle("▶ Live replay (real-time sim)", value=False):
     from streamlit_autorefresh import st_autorefresh
     st_autorefresh(interval=2500, key="tick")
-    t0, t1 = src.ts_range; step = max(1, (t1 - t0) // 40)
-    st.session_state["cursor"] = min(t1, st.session_state.get("cursor", t0) + step)
-    src.max_ts = st.session_state["cursor"]
-    st.sidebar.progress((src.max_ts - t0) / max(1, t1 - t0), text="stream position")
+    t0, t1 = src.ts_range
+    if t1 <= t0:
+        st.sidebar.warning("нет SCORED-данных — запусти ETL + scoring")
+        src.max_ts = None
+    else:
+        step = max(1, (t1 - t0) // 40)
+        st.session_state["cursor"] = min(t1, st.session_state.get("cursor", t0) + step)
+        src.max_ts = st.session_state["cursor"]
+        st.sidebar.progress((src.max_ts - t0) / max(1, t1 - t0), text="stream position")
 else:
     src.max_ts = None
 

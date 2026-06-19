@@ -13,7 +13,7 @@ spark.sparkContext.setLogLevel("WARN")
 # %% [cell 1b] RESET — run ONCE if tables exist with an OLD schema (e.g. after a seed run).
 # Drops the banking tables so the DDL below recreates them with the live schema
 # (transactions here carries src_opened/dst_opened). WIPES existing data.
-for _t in ["transactions", "accounts_state", "scored_transactions", "account_scores"]:
+for _t in ["transactions", "accounts_state", "scored_transactions", "account_scores", "blocklist"]:
     spark.sql(f"DROP TABLE IF EXISTS iceberg.banking.{_t}")
 print("dropped banking tables — run the DDL cell next")
 
@@ -41,6 +41,9 @@ spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.scored_transactions (
 # scoring-owned: toxicity/embedding (decoupled from accounts_state -> no writer race with ETL)
 spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.account_scores (
     account_id STRING, toxicity DOUBLE, node_embedding ARRAY<DOUBLE>, updated_ts BIGINT) USING iceberg""")
+# blocklist (landed from the `blocklist` Kafka topic) — ETL excludes these accounts' edges
+spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.blocklist (
+    account_id STRING, reason STRING, ts BIGINT) USING iceberg""")
 
 # %% [cell 3] Kafka -> Iceberg (PENDING): continuous landing, Spark manages offsets
 from pyspark.sql.functions import from_json, col, lit, array
@@ -64,19 +67,31 @@ ingest = (parsed.writeStream.foreachBatch(land)
           .trigger(processingTime="30 seconds").start())
 print("Kafka->Iceberg streaming started:", ingest.id)
 
+# %% [cell 3b] Kafka `blocklist` -> Iceberg banking.blocklist (append)
+bl_raw = (spark.readStream.format("kafka").option("kafka.bootstrap.servers", "kafka:9092")
+          .option("subscribe", "blocklist").option("startingOffsets", "earliest").load())
+bl_parsed = bl_raw.select(from_json(col("value").cast("string"),
+                          "account_id string, reason string, ts long").alias("d")).select("d.*")
+bl_q = (bl_parsed.writeStream.foreachBatch(lambda b, _: b.writeTo("iceberg.banking.blocklist").append())
+        .option("checkpointLocation", "/home/jovyan/work/chk/blocklist")
+        .trigger(processingTime="20 seconds").start())
+print("blocklist streaming started:", bl_q.id)
+
 # %% [cell 4] 5-minute feature ETL loop (mini-Airflow): PENDING -> FEATURES_READY
 import json, time
 meta = json.load(open("/home/jovyan/work/src/ml/artifacts/tgnlite_meta.json"))
 EM, ES = meta["edge_logamt_mean"], meta["edge_logamt_std"]
-TX, ACC = "iceberg.banking.transactions", "iceberg.banking.accounts_state"
+TX, ACC, BL = ("iceberg.banking.transactions", "iceberg.banking.accounts_state",
+               "iceberg.banking.blocklist")
+NOTBLK = f"source_account NOT IN (SELECT account_id FROM {BL}) AND target_account NOT IN (SELECT account_id FROM {BL})"
 
 NODE_SRC = f"""
 WITH o AS (SELECT source_account acc, count(*) od, sum(amount) os, avg(amount) om,
              count(distinct target_account) doc,
              avg(CASE WHEN amount BETWEEN 9000 AND 9500 THEN 1.0 ELSE 0.0 END) sr
-           FROM {TX} GROUP BY source_account),
+           FROM {TX} WHERE {NOTBLK} GROUP BY source_account),
      i AS (SELECT target_account acc, count(*) idg, sum(amount) isum, avg(amount) im,
-             count(distinct source_account) dic FROM {TX} GROUP BY target_account)
+             count(distinct source_account) dic FROM {TX} WHERE {NOTBLK} GROUP BY target_account)
 SELECT a.account_id, array(
    double(coalesce(o.od,0)), double(coalesce(i.idg,0)),
    ln(1+coalesce(o.os,0)), ln(1+coalesce(i.isum,0)),
@@ -104,6 +119,10 @@ while True:
     # 2) node features -> accounts_state.node_features
     spark.sql(f"MERGE INTO {ACC} t USING ({NODE_SRC}) s ON t.account_id=s.account_id "
               f"WHEN MATCHED THEN UPDATE SET t.node_features=s.node_features")
+    # 2b) blocked accounts' PENDING edges -> BLOCKED (excluded from scoring)
+    spark.sql(f"""MERGE INTO {TX} t USING (
+        SELECT tx_id FROM {TX} WHERE ml_status='PENDING' AND NOT ({NOTBLK})) s
+      ON t.tx_id=s.tx_id WHEN MATCHED THEN UPDATE SET t.ml_status='BLOCKED'""")
     # 3) edge features for PENDING -> FEATURES_READY
     n = spark.sql(f"SELECT count(*) c FROM {TX} WHERE ml_status='PENDING'").first()["c"]
     spark.sql(f"""MERGE INTO {TX} t USING (

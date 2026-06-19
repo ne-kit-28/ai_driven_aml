@@ -8,3 +8,4 @@ matplotlib==3.9.2
 trino==0.330.0
 openai==1.54.0
 httpx==0.27.2   # openai 1.54 passes proxies= to httpx; removed in httpx>=0.28 -> pin compatible
+kafka-python==2.0.2   # publish blocks to the `blocklist` topic

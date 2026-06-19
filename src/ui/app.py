@@ -8,6 +8,8 @@ AML compliance dashboard (microservice UI). Two modes:
   streamlit run app.py --server.port 8501 --server.address 0.0.0.0
 """
 import os
+import json
+import time
 import tempfile
 from pathlib import Path
 
@@ -36,10 +38,22 @@ def load_blocked() -> set:
 
 
 def block_account(account, reason, officer="officer"):
+    # local record (offline mode)
     row = pd.DataFrame([{"account_id": account, "reason": reason, "officer": officer,
                          "ts": pd.Timestamp.utcnow().isoformat()}])
     df = pd.concat([pd.read_parquet(BLOCKLIST), row]) if BLOCKLIST.exists() else row
     df.drop_duplicates("account_id", keep="last").to_parquet(BLOCKLIST, index=False)
+    # publish to the blocklist bus: producer stops/replaces it, ETL/scoring exclude its edges
+    bs = os.environ.get("KAFKA_BOOTSTRAP")
+    if bs:
+        try:
+            from kafka import KafkaProducer
+            p = KafkaProducer(bootstrap_servers=bs, api_version_auto_timeout_ms=5000,
+                              value_serializer=lambda v: json.dumps(v).encode())
+            p.send("blocklist", {"account_id": account, "reason": reason, "ts": int(time.time())})
+            p.flush(); p.close()
+        except Exception as e:
+            st.warning(f"blocklist publish failed: {e}")
 
 
 def embed(net):

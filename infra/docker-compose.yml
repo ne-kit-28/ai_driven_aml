@@ -202,6 +202,7 @@ services:
       DASH_SOURCE: trino
       TRINO_HOST: trino
       DATA_DIR: /data
+      KAFKA_BOOTSTRAP: kafka:9092      # publish blocks to the blocklist topic
     env_file:
       - path: ../.env          # LLM_API_KEY / LLM_BASE_URL / LLM_MODEL (see .env.example)
         required: false        # dashboard still runs without it (AI explain shows a hint)

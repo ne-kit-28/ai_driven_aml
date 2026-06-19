@@ -26,7 +26,7 @@ the next few cycles.
 
 ```mermaid
 flowchart LR
-  P["Producer / IBM-replay"] -->|tx_raw| K["Kafka"]
+  P["Producer (synthetic generator)"] -->|tx_raw| K["Kafka"]
   K -->|Spark streaming| ETL["Notebook ETL (5 min)"]
   ETL -->|features| ICE[("Iceberg on MinIO")]
   ICE --> SC["Scoring (TGN-lite)"]
@@ -65,14 +65,14 @@ For an offline demo without the stack, point the dashboard at the shipped
 | Path | Contents |
 |------|----------|
 | `infra/` | docker-compose, Trino, Hive, Spark, PySpark |
-| `src/ingest/` | Kafka producer, IBM AMLWorld replay |
+| `src/ingest/` | Kafka producer (synthetic generator) |
 | `src/etl/`, `src/features/` | streaming and batch feature pipelines |
 | `src/ml/` | model, training, scoring, artifacts |
 | `src/ui/` | Streamlit app, graph queries, LLM explainer |
 | `docs/` | architecture notes |
 
-Models train on a synthetic generator covering four laundering typologies and
-retrain on the IBM AML (AMLWorld) dataset.
+Models train on a synthetic generator covering four laundering typologies, with
+ground-truth labels for evaluation.
 
 ## Status
 

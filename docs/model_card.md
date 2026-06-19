@@ -50,23 +50,33 @@ that contaminated legitimate accounts recover.
 
 ## Training data
 
-- **Synthetic generator** (`src/generator/`): hub/mule topologies with amount
-  and account-age overlap, contamination, and four laundering typologies, with
-  ground-truth labels.
-- **Real data:** IBM AML (AMLWorld), Kaggle
-  `ealtman2019/ibm-transactions-for-anti-money-laundering-aml`
-  (CDLA-Sharing-1.0). Retrain via `src/ml/train_temporal.py`.
+- **Synthetic generator** (`src/generator/generate_graph.py`): hub/mule
+  topologies with amount and account-age overlap, contamination, and four
+  laundering typologies (T1 transit_ring, T2 smurfing, T3 fan_in_cashout,
+  T4 layering_chain), with ground-truth labels. Train via
+  `src/ml/train_temporal.py`.
 
 ## Evaluation
 
-> TODO: populate from a tracked evaluation run before any production use.
+Synthetic benchmark (`generate_graph.py --seed 42`, hold-out test split;
+3,195 accounts, 31,883 transactions, 2.48% fraud edges):
 
-Report on a held-out, chronologically split set, by typology:
+| Metric | Value |
+|--------|-------|
+| Edge ROC-AUC | 1.000 |
+| Edge PR-AUC | 0.999 |
+| Edge precision@k (k=362) | 0.983 |
+| Fraud base rate | 0.0378 |
+| Node (dropper) ROC-AUC | 1.000 |
 
-- Ranking quality: AUPRC, AUROC, precision@k / recall@k at the operating
-  threshold.
-- Calibration: reliability curve and expected calibration error.
-- Alert load: alerts per day and analyst review burden at the chosen threshold.
+Edge recall@k by typology: T1 1.00, T2 1.00, T3 0.833, T4 0.987.
+
+These numbers describe the **synthetic benchmark only**. ROC-AUC near 1.0 means
+the generator remains close to separable for a temporal model; T3 is measured on
+just 18 positives. Treat them as a regression baseline, not as a predictor of
+real-world performance. Before production use, re-evaluate on a held-out,
+chronologically split set of the target institution's data and add calibration
+(reliability curve, ECE) and alert-load metrics.
 
 ## Limitations and ethical considerations
 
@@ -78,8 +88,9 @@ Report on a held-out, chronologically split set, by typology:
 - **Feedback effects:** the blocklist loop changes the graph the model sees.
   Memory decays over several cycles, so toxicity drops gradually rather than
   instantly after a block.
-- **Distribution shift:** trained on synthetic and AMLWorld data; performance on
-  a specific institution's traffic must be re-validated before relying on it.
+- **Distribution shift:** trained and evaluated on synthetic data only;
+  performance on a specific institution's traffic must be re-validated before
+  relying on it.
 - **Fairness:** features include account age and flow patterns. Audit for
   disparate impact on legitimate customer segments before deployment.
 

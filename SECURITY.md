@@ -38,8 +38,8 @@ No secret may be committed to this repository.
 
 ## Data and models
 
-- Do not commit real customer or production data. Synthetic data and the public
-  IBM AML (AMLWorld) dataset are the only sanctioned inputs.
+- Do not commit real customer or production data. Synthetic data from the
+  generator is the only sanctioned input.
 - Model risk: scores are calibrated probabilities, not verdicts. See
   [`docs/model_card.md`](docs/model_card.md) for intended use and limitations.
 

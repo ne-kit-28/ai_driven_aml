@@ -27,6 +27,13 @@ SYSTEM_PROMPT = (
     "транзакции с 1–2 контрагентами и высокой токсичностью. У легитимного ХАБА/мерчанта/PSP — сотни "
     "транзакций с десятками-сотнями контрагентов и НИЗКАЯ токсичность. Хаб закономерно получает деньги "
     "и от плохих акторов и сам платит многим — это норма коммерции, НЕ дроппер.\n\n"
+    "РОЛИ — определяй по НАПРАВЛЕНИЮ и широте потока (используй 'Профиль потока' из улик):\n"
+    "- ТРАНЗИТ/мул: вход ≈ выход (получил и почти столько же переслал), мало контрагентов. "
+    "Если выход НАМНОГО больше входа — это НЕ транзит (нельзя переслать больше, чем получил).\n"
+    "- ДРОППЕР-фидер: нетто-ОТПРАВИТЕЛЬ небольших сумм В схему (на коллектора/токсичные узлы).\n"
+    "- КОЛЛЕКТОР: нетто-ПОЛУЧАТЕЛЬ от МНОГИХ, затем вывод одному/на биржу.\n"
+    "- ХАБ/мерчант: много контрагентов, низкая токсичность — легитимно.\n"
+    "Не путай роли: смотри, преобладает приток или отток и от/к скольким контрагентам.\n\n"
     "КРИТИЧЕСКИ ВАЖНО (избегай вины по ассоциации):\n"
     "- Один или несколько входящих переводов от 'красного' контрагента САМИ ПО СЕБЕ НЕ делают счёт "
     "дроппером. Легитимные счета регулярно получают деньги от плохих акторов (жертвы, продавцы, "
@@ -67,9 +74,20 @@ def build_evidence(account: str, edges: pd.DataFrame, attrs: pd.DataFrame,
              f"Входящих: {len(inn)} tx от {in_cp} контрагентов на {inn.amount.sum():.0f}",
              f"Исходящих: {len(out)} tx к {out_cp} контрагентам на {out.amount.sum():.0f}",
              f"Степень: {deg} транзакций, {cps} уникальных контрагентов — {profile}"]
-    if len(inn) and len(out):
-        lines.append(f"Pass-through (сумма исх/вх): {out.amount.sum()/max(inn.amount.sum(),1):.2f} "
-                     f"(у мула ≈1 при 1–2 транзакциях; у хаба ≈1 при сотнях транзакций)")
+    in_sum, out_sum = float(inn.amount.sum()), float(out.amount.sum())
+    if max(in_sum, out_sum) < 1:
+        flow = "движения средств почти нет"
+    elif out_sum > 3 * in_sum:
+        flow = (f"НЕТТО-ОТПРАВИТЕЛЬ: исходящее ({out_sum:.0f}) НАМНОГО больше входящего ({in_sum:.0f}). "
+                f"Это НЕ транзит — нельзя 'переслать' больше, чем получил; скорее источник/распределение "
+                f"собственных средств (или дроппер-фидер, если шлёт на токсичные узлы)")
+    elif in_sum > 3 * out_sum:
+        flow = (f"НЕТТО-ПОЛУЧАТЕЛЬ: входящее ({in_sum:.0f}) намного больше исходящего ({out_sum:.0f}) — "
+                f"накопление/сбор (коллектор), если входов много")
+    else:
+        flow = (f"СОПОСТАВИМЫЕ потоки: вх {in_sum:.0f} ≈ исх {out_sum:.0f} — возможен транзит/pass-through "
+                f"(подтверждается, только если транзакций мало и суммы совпадают)")
+    lines.append(f"Профиль потока: {flow}")
 
     lines.append("\nСОБСТВЕННЫЕ транзакции счёта (топ по риску):")
     top = incident.sort_values("risk_score", ascending=False).head(8)
@@ -86,7 +104,38 @@ def build_evidence(account: str, edges: pd.DataFrame, attrs: pd.DataFrame,
     return "\n".join(lines)
 
 
-def explain(evidence: str) -> str:
+FLOW_PROMPT = (
+    "Ты — аналитик AML. Тебе дают РАЗДЕЛЬНО входящие и исходящие переводы счёта. "
+    "Проанализируй приток и отток ОТДЕЛЬНО:\n"
+    "- Источники (вход): кто шлёт, какие суммы, риск, токсичность отправителей; есть ли "
+    "концентрация на одном источнике или много мелких; есть ли токсичные источники.\n"
+    "- Получатели (выход): куда уходит, суммы, риск, токсичность получателей; концентрация/распыление; "
+    "куда идёт вывод.\n"
+    "Сделай вывод о НЕТТО-направлении (источник / транзит / сбор / хаб) строго по числам. "
+    "Кратко, на русском. Это вспомогательный разбор потоков, без окончательного вердикта."
+)
+
+
+def build_flow_evidence(account: str, attrs: pd.DataFrame, incident: pd.DataFrame, topn: int = 12) -> str:
+    inn = incident[incident.target_account == account]
+    out = incident[incident.source_account == account]
+    cp_tox = attrs["toxicity"] if "toxicity" in attrs else pd.Series(dtype=float)
+
+    def block(df, who_col, title):
+        rows = [f"{title}: {len(df)} tx от/к {df[who_col].nunique()} контрагентов, сумма {df.amount.sum():.0f}"]
+        for _, e in df.sort_values("amount", ascending=False).head(topn).iterrows():
+            other = e[who_col]
+            ot = float(cp_tox.get(other, float("nan"))) if len(cp_tox) else float("nan")
+            rows.append(f"  {other}  сумма={e.amount:.0f}  риск={float(e.risk_score or 0):.2f}  токсичность={ot:.2f}")
+        return "\n".join(rows)
+
+    tox = float(attrs.loc[account, "toxicity"]) if account in attrs.index else float("nan")
+    return (f"Счёт: {account} | токсичность GNN: {tox:.3f}\n\n"
+            + block(inn, "source_account", "ВХОДЯЩИЕ (источники средств)") + "\n\n"
+            + block(out, "target_account", "ИСХОДЯЩИЕ (получатели)"))
+
+
+def explain(evidence: str, system: str = SYSTEM_PROMPT) -> str:
     key = os.environ.get("LLM_API_KEY")
     if not key:
         return ("⚠️ LLM не настроен. Укажи `LLM_API_KEY` в `.env` рядом с проектом "
@@ -98,7 +147,7 @@ def explain(evidence: str) -> str:
         client = OpenAI(api_key=key, base_url=base)
         resp = client.chat.completions.create(
             model=model, temperature=0.2,
-            messages=[{"role": "system", "content": SYSTEM_PROMPT},
+            messages=[{"role": "system", "content": system},
                       {"role": "user", "content": evidence}])
         return resp.choices[0].message.content
     except Exception as e:

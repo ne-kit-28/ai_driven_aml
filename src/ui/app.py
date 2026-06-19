@@ -16,7 +16,7 @@ import streamlit as st
 import streamlit.components.v1 as components
 
 from graph_query import ParquetSource, TrinoSource, trace, build_network
-from llm_explain import build_evidence, explain
+from llm_explain import build_evidence, build_flow_evidence, explain, FLOW_PROMPT
 
 st.set_page_config(page_title="AML Graph", layout="wide", page_icon="🕸️")
 BLOCKLIST = Path(os.environ.get("DATA_DIR", "data")) / "blocklist.parquet"
@@ -132,16 +132,24 @@ if mode == "🔎 Investigate account":
     st.dataframe(inc.rename(columns={"source_account": "from", "target_account": "to",
                                      "risk_score": "risk"}), hide_index=True, height=240)
 
-    st.markdown("#### 🧠 AI-объяснение (GraphRAG → SAR)")
-    if st.button("Объяснить, почему подозрение на дроппера", key="explain_btn"):
+    st.markdown("#### 🧠 AI (LLM)")
+    bcol = st.columns(2)
+    if bcol[0].button("SAR: почему подозрение на дроппера", key="explain_btn"):
         with st.spinner("Собираю улики из эго-графа и спрашиваю ИИ…"):
-            ev = build_evidence(acct, edges, attrs, incident)
-            st.session_state["sar"] = explain(ev)
+            st.session_state["sar"] = explain(build_evidence(acct, edges, attrs, incident))
             st.session_state["sar_acct"] = acct
+    if bcol[1].button("Анализ входящих / исходящих", key="flow_btn"):
+        with st.spinner("Разбираю потоки счёта…"):
+            cps = set(incident.source_account) | set(incident.target_account) | {acct}
+            fattrs = src.node_attrs(cps)
+            st.session_state["flow"] = explain(build_flow_evidence(acct, fattrs, incident), system=FLOW_PROMPT)
+            st.session_state["flow_acct"] = acct
     if st.session_state.get("sar") and st.session_state.get("sar_acct") == acct:
-        st.markdown(st.session_state["sar"])
-        with st.expander("улики, отправленные модели"):
-            st.code(build_evidence(acct, edges, attrs, incident))
+        st.markdown("**SAR — вердикт:**"); st.markdown(st.session_state["sar"])
+    if st.session_state.get("flow") and st.session_state.get("flow_acct") == acct:
+        st.markdown("**Разбор потоков (вход/выход):**"); st.markdown(st.session_state["flow"])
+    with st.expander("улики SAR, отправленные модели"):
+        st.code(build_evidence(acct, edges, attrs, incident))
 
 # ============================ MONITOR ============================
 else:

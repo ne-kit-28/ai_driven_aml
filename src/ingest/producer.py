@@ -92,8 +92,19 @@ def main():
         return
 
     from kafka import KafkaProducer
-    prod = KafkaProducer(bootstrap_servers=args.bootstrap,
-                         value_serializer=lambda v: json.dumps(v).encode())
+    from kafka.errors import NoBrokersAvailable
+    prod = None
+    for attempt in range(60):
+        try:
+            prod = KafkaProducer(bootstrap_servers=args.bootstrap,
+                                 value_serializer=lambda v: json.dumps(v).encode(),
+                                 api_version_auto_timeout_ms=10000, retries=5)
+            break
+        except NoBrokersAvailable:
+            print(f"[producer] kafka not ready, retry {attempt+1}/60…", flush=True)
+            time.sleep(5)
+    if prod is None:
+        raise SystemExit("kafka unavailable after retries")
     print(f"producing to {args.bootstrap}/{args.topic} (rate {args.rate}/s)", flush=True)
     last_fraud = time.time(); sent = 0
     while True:

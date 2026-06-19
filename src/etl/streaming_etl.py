@@ -24,12 +24,17 @@ spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.transactions (
     typology_id STRING, is_fraud INT, src_opened INT, dst_opened INT,
     features_matrix ARRAY<DOUBLE>, risk_score DOUBLE, ml_status STRING)
   USING iceberg PARTITIONED BY (ml_status)
-  TBLPROPERTIES ('format-version'='2','write.delete.mode'='merge-on-read')""")
+  TBLPROPERTIES ('format-version'='2',
+    'write.delete.mode'='merge-on-read', 'write.update.mode'='merge-on-read',
+    'write.merge.mode'='merge-on-read',
+    'write.merge.isolation-level'='snapshot', 'write.update.isolation-level'='snapshot')""")
 spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.accounts_state (
     account_id STRING, opened_days_ago INT, is_fraud INT, fraud_role STRING, typology_id STRING,
     node_features ARRAY<DOUBLE>, node_embedding ARRAY<DOUBLE>, toxicity DOUBLE,
     emb_version INT, updated_ts BIGINT)
-  USING iceberg TBLPROPERTIES ('format-version'='2','write.delete.mode'='merge-on-read')""")
+  USING iceberg TBLPROPERTIES ('format-version'='2',
+    'write.delete.mode'='merge-on-read', 'write.update.mode'='merge-on-read',
+    'write.merge.mode'='merge-on-read', 'write.merge.isolation-level'='snapshot')""")
 spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.scored_transactions (
     tx_id STRING, source_account STRING, target_account STRING, amount DOUBLE, ts BIGINT,
     risk_score DOUBLE, ml_status STRING) USING iceberg""")

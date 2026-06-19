@@ -81,12 +81,14 @@ class IcebergIO:
             return self.cat.create_table("banking.account_scores", schema=schema)
 
     def account_features(self):
+        self.acc_t = self.cat.load_table("banking.accounts_state")   # refresh: see ETL's node_features
         acc = self.acc_t.scan().to_pandas()
         node_x = np.stack(acc["node_features"].to_numpy()).astype(np.float32)
         return acc["account_id"].tolist(), node_x, acc
 
     def poll(self):
         from pyiceberg.expressions import EqualTo
+        self.tx_t = self.cat.load_table("banking.transactions")   # refresh: see new ETL commits
         df = self.tx_t.scan(row_filter=EqualTo("ml_status", "FEATURES_READY")).to_pandas()
         df = df[~df.tx_id.isin(self.seen)].sort_values("ts")   # only not-yet-scored, any ts order
         print(f"[reader] FEATURES_READY unscored: {len(df)} rows", flush=True)
@@ -105,6 +107,7 @@ class IcebergIO:
                              "toxicity": np.asarray(tox, dtype="float64"),
                              "node_embedding": [emb[i].tolist() for i in range(len(ids))],
                              "updated_ts": int(time.time())})
+        self.scores_t = self.cat.load_table("banking.account_scores")   # refresh metadata
         arrow = schema_to_pyarrow(self.scores_t.schema())
         rows = rows[[f.name for f in arrow]]
         self.scores_t.overwrite(pa.Table.from_pandas(rows, schema=arrow, preserve_index=False))

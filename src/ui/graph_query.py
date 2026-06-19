@@ -20,6 +20,8 @@ import networkx as nx
 import pandas as pd
 from pyvis.network import Network
 
+from graph_agg import aggregate_edges
+
 TOX = cm.get_cmap("RdYlGn_r")
 RISK = mcolors.LinearSegmentedColormap.from_list("risk", ["#9aa0a6", "#d62728"])
 
@@ -163,9 +165,9 @@ def build_network(edges, attrs, alert=None, blocked=()):
     for a, row in attrs.iterrows():
         g.add_node(a, tox=float(row.get("toxicity", 0) or 0), role=str(row.get("fraud_role", "")),
                    fraud=int(row.get("is_fraud", 0) or 0))
-    for _, e in edges.iterrows():
+    for _, e in aggregate_edges(edges).iterrows():
         g.add_edge(e.source_account, e.target_account,
-                   amount=float(e.amount), risk=float(e.risk_score or 0))
+                   amount=float(e.amount), risk=float(e.risk_score or 0), n_tx=int(e.n_tx))
     pos = nx.spring_layout(g, seed=42, k=1.3)
     if alert in pos:                                       # centre the investigated account
         cx, cy = pos[alert]; pos = {n: (p[0] - cx, p[1] - cy) for n, p in pos.items()}
@@ -183,6 +185,8 @@ def build_network(edges, attrs, alert=None, blocked=()):
                      title=f"{n}\nrole: {d['role']}\ntoxicity: {d['tox']:.2f}"
                            f"\nfraud(gt): {d['fraud']}" + ("\nBLOCKED" if is_blocked else ""))
     for u, v, d in g.edges(data=True):
-        net.add_edge(u, v, color=_hex(RISK, d["risk"]), width=1 + 5 * d["risk"],
-                     title=f"amount: {d['amount']:.0f}\nrisk: {d['risk']:.2f}")
+        ntx = d.get("n_tx", 1)
+        net.add_edge(u, v, color=_hex(RISK, d["risk"]),
+                     width=1 + 1.6 * (ntx ** 0.5) + 3.5 * d["risk"],
+                     title=f"{ntx} tx · total {d['amount']:.0f} · peak risk {d['risk']:.2f}")
     return net, g

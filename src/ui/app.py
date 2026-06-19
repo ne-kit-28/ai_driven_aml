@@ -298,8 +298,11 @@ else:
         st.session_state["acct"] = pick; st.session_state["mode"] = "🔎 Investigate account"; st.rerun()
 
     if show_graph and not feed.empty:
-        ed = src.top_risk_edges(80)
+        st.markdown("#### Top suspicious network")
+        gn = st.slider("transactions in graph", 50, 600, 200, 25, key="mon_graph_n",
+                       help="parallel transfers between the same pair are merged into one weighted edge")
+        ed = src.top_risk_edges(gn)
         nodes = set(ed.source_account) | set(ed.target_account)
         net, g = build_network(ed, src.node_attrs(nodes), alert=None, blocked=blocked)
-        st.markdown("#### Top suspicious network")
+        st.caption(f"{g.number_of_nodes()} accounts · {g.number_of_edges()} edges (from {len(ed)} tx)")
         embed(net); st.caption(LEGEND)

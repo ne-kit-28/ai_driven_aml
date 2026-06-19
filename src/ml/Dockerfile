@@ -6,7 +6,7 @@ WORKDIR /app
 RUN pip install --no-cache-dir torch==2.5.1 --index-url https://download.pytorch.org/whl/cpu
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
-COPY features.py stream_model.py infer_stream.py ./
+COPY features.py exactly_once.py stream_model.py infer_stream.py ./
 
 ENV PYTHONUNBUFFERED=1
 # model artifact is mounted at /artifacts; bookmark/state at /state

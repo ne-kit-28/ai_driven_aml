@@ -62,9 +62,20 @@ class IcebergIO:
         self.tx_t = self.cat.load_table("banking.transactions")
         self.scored_t = self.cat.load_table("banking.scored_transactions")
         self.acc_t = self.cat.load_table("banking.accounts_state")
+        self.scores_t = self._scores_table()      # scoring-owned table (no race with ETL)
         self.bs = batch_size
         self.ts_offset = 0.0
         self.bm = Path(bookmark); self.bm.parent.mkdir(parents=True, exist_ok=True)
+
+    def _scores_table(self):
+        import pyarrow as pa
+        try:
+            return self.cat.load_table("banking.account_scores")
+        except Exception:
+            schema = pa.schema([("account_id", pa.string()), ("toxicity", pa.float64()),
+                                ("node_embedding", pa.list_(pa.float64())), ("updated_ts", pa.int64())])
+            self.cat.create_namespace_if_not_exists("banking")
+            return self.cat.create_table("banking.account_scores", schema=schema)
 
     def account_features(self):
         acc = self.acc_t.scan().to_pandas()
@@ -88,15 +99,14 @@ class IcebergIO:
     def snapshot_accounts(self, accounts, ids, tox, emb):
         import pyarrow as pa
         from pyiceberg.io.pyarrow import schema_to_pyarrow
-        t = dict(zip(ids, tox)); e = {a: emb[i].tolist() for i, a in enumerate(ids)}
-        snap = accounts.copy()
-        snap["toxicity"] = snap["account_id"].map(t).astype("float64")
-        snap["node_embedding"] = snap["account_id"].map(e)
-        snap["updated_ts"] = int(time.time())
-        # write strictly to the table schema: avoids pyarrow inferring 'null' for all-null columns
-        arrow = schema_to_pyarrow(self.acc_t.schema())
-        snap = snap[[f.name for f in arrow]]
-        self.acc_t.overwrite(pa.Table.from_pandas(snap, schema=arrow, preserve_index=False))
+        # write to the scoring-owned account_scores table (decoupled from ETL's accounts_state)
+        rows = pd.DataFrame({"account_id": list(ids),
+                             "toxicity": np.asarray(tox, dtype="float64"),
+                             "node_embedding": [emb[i].tolist() for i in range(len(ids))],
+                             "updated_ts": int(time.time())})
+        arrow = schema_to_pyarrow(self.scores_t.schema())
+        rows = rows[[f.name for f in arrow]]
+        self.scores_t.overwrite(pa.Table.from_pandas(rows, schema=arrow, preserve_index=False))
 
 
 # ----------------------------- live state -----------------------------

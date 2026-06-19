@@ -13,7 +13,7 @@ spark.sparkContext.setLogLevel("WARN")
 # %% [cell 1b] RESET — run ONCE if tables exist with an OLD schema (e.g. after a seed run).
 # Drops the banking tables so the DDL below recreates them with the live schema
 # (transactions here carries src_opened/dst_opened). WIPES existing data.
-for _t in ["transactions", "accounts_state", "scored_transactions"]:
+for _t in ["transactions", "accounts_state", "scored_transactions", "account_scores"]:
     spark.sql(f"DROP TABLE IF EXISTS iceberg.banking.{_t}")
 print("dropped banking tables — run the DDL cell next")
 
@@ -38,6 +38,9 @@ spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.accounts_state (
 spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.scored_transactions (
     tx_id STRING, source_account STRING, target_account STRING, amount DOUBLE, ts BIGINT,
     risk_score DOUBLE, ml_status STRING) USING iceberg""")
+# scoring-owned: toxicity/embedding (decoupled from accounts_state -> no writer race with ETL)
+spark.sql("""CREATE TABLE IF NOT EXISTS iceberg.banking.account_scores (
+    account_id STRING, toxicity DOUBLE, node_embedding ARRAY<DOUBLE>, updated_ts BIGINT) USING iceberg""")
 
 # %% [cell 3] Kafka -> Iceberg (PENDING): continuous landing, Spark manages offsets
 from pyspark.sql.functions import from_json, col, lit, array

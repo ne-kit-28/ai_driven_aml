@@ -95,12 +95,14 @@ class TrinoSource:
 
     def node_attrs(self, accts):
         accts = list(accts); ph = ",".join(["?"] * len(accts))
-        return self._q(f"SELECT account_id, fraud_role, is_fraud, toxicity "
-                       f"FROM accounts_state WHERE account_id IN ({ph})", accts).set_index("account_id")
+        return self._q(f"SELECT a.account_id, a.fraud_role, a.is_fraud, s.toxicity "
+                       f"FROM accounts_state a LEFT JOIN account_scores s ON a.account_id=s.account_id "
+                       f"WHERE a.account_id IN ({ph})", accts).set_index("account_id")
 
     def top_alerts(self, n=15):
-        return self._q(f"SELECT account_id, fraud_role, toxicity FROM accounts_state "
-                       f"ORDER BY toxicity DESC LIMIT {n}")
+        return self._q(f"SELECT s.account_id, a.fraud_role, s.toxicity "
+                       f"FROM account_scores s LEFT JOIN accounts_state a ON s.account_id=a.account_id "
+                       f"ORDER BY s.toxicity DESC LIMIT {n}")
 
     def recent(self, min_risk=0.0, limit=200, only_susp=True):
         conds = []

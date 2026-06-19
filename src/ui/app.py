@@ -197,6 +197,17 @@ elif mode == "🚩 Suspicious nodes":
     if pick and cpick[2].button("⛔ Block", type="primary"):
         block_account(pick, "suspected dropper"); st.success(f"{pick} blocked → blocklist"); st.rerun()
 
+    st.markdown("#### Граф самых токсичных узлов")
+    ktop = st.slider("сколько топ-токсичных узлов показать", 5, 40, 15)
+    seeds = flagged["account_id"].head(ktop).tolist()
+    if seeds:
+        ed = src.incident_edges(set(seeds)).sort_values("risk_score", ascending=False).head(150)
+        nodes = set(ed.source_account) | set(ed.target_account) | set(seeds)
+        net, g = build_network(ed, src.node_attrs(nodes), alert=None, blocked=blocked)
+        embed(net); st.caption(LEGEND)
+    else:
+        st.info("Нет узлов выше порога.")
+
 # ============================ VERIFICATION ============================
 elif mode == "✅ Verification":
     st.markdown("### ✅ Verification — model vs ground truth (synthetic)")

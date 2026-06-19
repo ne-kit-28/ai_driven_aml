@@ -217,7 +217,7 @@ services:
     image: aml/producer:latest
     profiles: ["streaming"]
     depends_on: [kafka]
-    command: ["python", "producer.py", "--bootstrap", "kafka:9092", "--rate", "5", "--fraud-every", "60"]
+    command: ["python", "producer.py", "--bootstrap", "kafka:9092", "--rate", "5", "--case-every", "45"]
 
   kafka:
     image: apache/kafka:3.9.0

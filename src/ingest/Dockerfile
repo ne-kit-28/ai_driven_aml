@@ -5,4 +5,4 @@ COPY ingest/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY ingest/producer.py ./
 ENV PYTHONUNBUFFERED=1
-CMD ["python", "producer.py", "--bootstrap", "kafka:9092", "--rate", "5", "--fraud-every", "60"]
+CMD ["python", "producer.py", "--bootstrap", "kafka:9092", "--rate", "5", "--case-every", "45"]

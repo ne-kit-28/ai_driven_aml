@@ -151,6 +151,25 @@ services:
       AWS_REGION: us-east-1
       SEED_SCALE: "1.0"
 
+  # Stage 2 — feature pipeline (one-shot): PENDING -> features -> FEATURES_READY.
+  # Run after seed, before scoring.
+  stage2:
+    build:
+      context: ../src
+      dockerfile: features/Dockerfile
+    image: aml/stage2:latest
+    profiles: ["stage2"]
+    environment:
+      PYICEBERG_CATALOG__DEFAULT__TYPE: hive
+      PYICEBERG_CATALOG__DEFAULT__URI: thrift://hive-metastore:9083
+      PYICEBERG_CATALOG__DEFAULT__WAREHOUSE: s3://warehouse/
+      PYICEBERG_CATALOG__DEFAULT__S3__ENDPOINT: http://minio:9000
+      PYICEBERG_CATALOG__DEFAULT__S3__ACCESS_KEY_ID: admin
+      PYICEBERG_CATALOG__DEFAULT__S3__SECRET_ACCESS_KEY: password123
+      AWS_REGION: us-east-1
+    volumes:
+      - ../src/ml/artifacts:/artifacts:ro     # tgnlite_meta.json: fixed edge z-score stats
+
   # Graph scoring service (microservice) — reads FEATURES_READY, writes SCORED + toxicity.
   # Own profile: start it after the lake has data & tables (Stage 2 + scored/accounts tables).
   scoring:
@@ -188,6 +207,16 @@ services:
         required: false        # dashboard still runs without it (AI explain shows a hint)
     volumes:
       - ../data:/data:ro     # only used if DASH_SOURCE=parquet (offline fallback)
+
+  # Continuous raw-transaction producer -> Kafka topic tx_raw
+  producer:
+    build:
+      context: ../src
+      dockerfile: ingest/Dockerfile
+    image: aml/producer:latest
+    profiles: ["streaming"]
+    depends_on: [kafka]
+    command: ["python", "producer.py", "--bootstrap", "kafka:9092", "--rate", "5", "--fraud-every", "60"]
 
   kafka:
     image: apache/kafka:3.9.0

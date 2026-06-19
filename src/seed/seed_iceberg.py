@@ -20,7 +20,6 @@ import pyarrow as pa
 from pyiceberg.catalog import load_catalog
 
 from generate_graph import build
-from features import build_node_features, build_edge_features
 
 NS = "banking"
 
@@ -49,25 +48,23 @@ def main():
     cat.create_namespace_if_not_exists(NS)
 
     accounts, tx = build(seed, scale)
-    node_x, idx = build_node_features(accounts, tx)
-    ef = build_edge_features(tx)
 
-    # edges, FEATURES_READY
+    # raw edges, PENDING — features_matrix is a placeholder, filled by Stage 2
     tx_tbl = pa.Table.from_pandas(pd.DataFrame({
         "tx_id": tx.tx_id, "source_account": tx.source_account, "target_account": tx.target_account,
         "amount": tx.amount.astype("float64"), "ts": tx.ts.astype("int64"),
         "typology_id": tx.typology_id, "is_fraud": tx.is_fraud.astype("int64"),
-        "features_matrix": [r.astype("float64").tolist() for r in ef],
+        "features_matrix": [[0.0, 0.0, 0.0] for _ in range(len(tx))],
         "risk_score": np.full(len(tx), np.nan),
-        "ml_status": "FEATURES_READY",
+        "ml_status": "PENDING",
     }), preserve_index=False)
 
-    # nodes, with the Stage-2 feature vector; h_v starts empty
+    # accounts dimension — node_features is a placeholder, filled by Stage 2
     acc_tbl = pa.Table.from_pandas(pd.DataFrame({
         "account_id": accounts.account_id, "opened_days_ago": accounts.opened_days_ago.astype("int64"),
         "is_fraud": accounts.is_fraud.astype("int64"), "fraud_role": accounts.fraud_role,
         "typology_id": accounts.typology_id,
-        "node_features": [node_x[idx[a]].astype("float64").tolist() for a in accounts.account_id],
+        "node_features": [[0.0] * 11 for _ in range(len(accounts))],
         "node_embedding": [[0.0] for _ in range(len(accounts))],
         "toxicity": np.full(len(accounts), np.nan),
         "emb_version": np.zeros(len(accounts), "int64"), "updated_ts": np.zeros(len(accounts), "int64"),

@@ -1,0 +1,35 @@
+# Quiet mode: security updates only, monthly, grouped into a single PR.
+# Routine version bumps are disabled (open-pull-requests-limit: 0); that limit
+# does not affect security updates, which are grouped via applies-to below.
+# Requires repo setting "Dependabot security updates" to be enabled.
+version: 2
+updates:
+  - package-ecosystem: pip
+    directories:
+      - "/"
+      - "/src/features"
+      - "/src/ingest"
+      - "/src/ml"
+      - "/src/seed"
+      - "/src/ui"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "chore"
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]
+
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule:
+      interval: monthly
+    open-pull-requests-limit: 0
+    commit-message:
+      prefix: "chore"
+    groups:
+      security:
+        applies-to: security-updates
+        patterns: ["*"]

@@ -15,6 +15,8 @@ v2 — PERSISTENT fraud + blocklist-aware (for the live "block -> health improve
 from __future__ import annotations
 import argparse, json, random, threading, time
 
+from blocklist import edge_blocked
+
 STRUCT_LO, STRUCT_HI = 9000.0, 9500.0
 
 
@@ -56,7 +58,7 @@ class Stream:
         amt = self.rng.lognormvariate(6.2, 1.1)
         if self.rng.random() < 0.05:
             amt = self.rng.uniform(STRUCT_LO, STRUCT_HI)
-        return [] if (s in self.blocked or d in self.blocked) else [self._msg(s, d, amt)]
+        return [] if edge_blocked(s, d, self.blocked) else [self._msg(s, d, amt)]
 
     def open_case(self):
         self._case_n += 1
@@ -79,7 +81,7 @@ class Stream:
         out, k, a = [], c["kind"], c["accounts"]
 
         def tx(s, d, amt):
-            if s not in self.blocked and d not in self.blocked:
+            if not edge_blocked(s, d, self.blocked):
                 out.append(self._msg(s, d, amt, c["id"], fraud=True))
 
         if k == "fanin":

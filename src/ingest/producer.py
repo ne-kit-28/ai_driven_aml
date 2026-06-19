@@ -1,94 +1,160 @@
 """
 Continuous synthetic transaction producer -> Kafka topic `tx_raw`.
 
-Emits a trickle of mostly-legit transactions and periodically injects a fraud
-burst (fan-in, ring, chain, smurfing). Each message carries the endpoints'
-account age so the ETL can build the accounts dimension without a separate feed.
+v2 — PERSISTENT fraud + blocklist-aware (for the live "block -> health improves" demo):
+  * legit trickle (some via hubs);
+  * persistent fraud CASES that keep emitting over time and contaminate a fixed
+    legit "victim" (so blocking them later visibly cleans the victim up);
+  * each case logs `[INJECT] case=... nodes=[...]` (ground truth = typology_id carries case id);
+  * consumes Kafka `blocklist`: a blocked account is dropped AND, if it's a fraud
+    actor, REPLACED by a fresh account so the scheme adapts (`[REPLACE] ...`).
 
-  python producer.py --dry-run -n 8         # print sample messages, no Kafka
-  python producer.py --bootstrap kafka:9092 --rate 5   # ~5 tx/sec to Kafka
+  python producer.py --dry-run                       # print ticks + simulate a block
+  python producer.py --bootstrap kafka:9092 --rate 5
 """
 from __future__ import annotations
-import argparse, json, random, time
+import argparse, json, random, threading, time
 
 STRUCT_LO, STRUCT_HI = 9000.0, 9500.0
 
 
 class Stream:
-    def __init__(self, seed=7, n_accounts=400):
+    def __init__(self, seed=7, n_legit=400, n_victims=25):
         self.rng = random.Random(seed)
-        self.t = 0
+        self._aid = 0
         self.tid = 0
-        self.accounts = {f"ACC{i:07d}": self.rng.randint(20, 2000) for i in range(n_accounts)}
-        self.ids = list(self.accounts)
+        self._ages = {}
+        self.legit = [self._new_acc() for _ in range(n_legit)]
+        self.hubs = [self._new_acc() for _ in range(8)]
+        self.victims = self.rng.sample(self.legit, n_victims)   # legit targets of persistent fraud
+        self.cases = []                 # active persistent fraud cases
+        self.blocked = set()
+        self.lock = threading.Lock()
+        self._case_n = 0
 
-    def _new_fraud_acc(self, fresh=True):
-        i = len(self.accounts)
-        a = f"ACC{i:07d}"
-        self.accounts[a] = self.rng.randint(0, 9) if fresh else self.rng.randint(20, 2000)
-        self.ids.append(a)
+    def _new_acc(self, fraud=False, fresh=False):
+        self._aid += 1
+        a = f"ACC{self._aid:07d}"
+        self._ages[a] = self.rng.randint(0, 9) if fresh else self.rng.randint(20, 2000)
         return a
 
-    def _msg(self, s, d, amount, fraud=False, typ=None):
+    def _msg(self, s, d, amount, case_id=None, fraud=False):
         self.tid += 1
         return {"tx_id": f"TX{int(time.time()*1000)}{self.tid:06d}",
                 "source_account": s, "target_account": d,
                 "amount": round(float(max(amount, 1.0)), 2), "ts": int(time.time()),
-                "typology_id": typ, "is_fraud": int(fraud),
-                "src_opened": self.accounts[s], "dst_opened": self.accounts[d]}
+                "typology_id": case_id, "is_fraud": int(fraud),
+                "src_opened": self._ages.get(s, 100), "dst_opened": self._ages.get(d, 100)}
 
-    def legit(self):
-        s, d = self.rng.sample(self.ids, 2)
+    def legit_tx(self):
+        if self.rng.random() < 0.25:
+            s, d = self.rng.choice(self.legit), self.rng.choice(self.hubs)
+            if self.rng.random() < 0.5:
+                s, d = d, s
+        else:
+            s, d = self.rng.sample(self.legit, 2)
         amt = self.rng.lognormvariate(6.2, 1.1)
         if self.rng.random() < 0.05:
             amt = self.rng.uniform(STRUCT_LO, STRUCT_HI)
-        return [self._msg(s, d, amt)]
+        return [] if (s in self.blocked or d in self.blocked) else [self._msg(s, d, amt)]
 
-    def fraud_burst(self):
-        self.t += 1
-        kind = self.rng.choice(["fanin", "chain", "smurf"])
-        out = []
+    def open_case(self):
+        self._case_n += 1
+        kind = self.rng.choice(["fanin", "chain", "ring", "smurf"])
+        cid = f"{kind}_{self._case_n}"
+        victim = self.rng.choice(self.victims)
         if kind == "fanin":
-            tid = f"T3_fanin_{self.t}"
-            collector = self._new_fraud_acc()
-            for _ in range(self.rng.randint(5, 12)):
-                dr = self._new_fraud_acc()
-                out.append(self._msg(dr, collector, self.rng.uniform(3e3, 1.5e4), True, tid))
-            out.append(self._msg(collector, self.rng.choice(self.ids), sum(m["amount"] for m in out) * 0.97, True, tid))
+            accts = [self._new_acc(True, True)] + [self._new_acc(True, True) for _ in range(self.rng.randint(5, 10))]
         elif kind == "chain":
-            tid = f"T4_chain_{self.t}"
-            chain = [self._new_fraud_acc() for _ in range(self.rng.randint(6, 15))]
-            amt = self.rng.uniform(5e4, 2e5)
-            for i in range(len(chain) - 1):
-                out.append(self._msg(chain[i], chain[i + 1], amt * (0.99 ** i) * self.rng.uniform(.8, 1.2), True, tid))
-        else:
-            tid = f"T2_smurf_{self.t}"
-            src, agg = self._new_fraud_acc(), self._new_fraud_acc()
-            for _ in range(self.rng.randint(8, 16)):
-                sm = self._new_fraud_acc()
-                a = self.rng.uniform(STRUCT_LO, STRUCT_HI)
-                out += [self._msg(src, sm, a, True, tid), self._msg(sm, agg, a * 0.98, True, tid)]
+            accts = [self._new_acc(True, True) for _ in range(self.rng.randint(6, 12))]
+        elif kind == "ring":
+            accts = [self._new_acc(True, True) for _ in range(self.rng.randint(4, 7))]
+        else:  # smurf: [src, agg, smurfs...]
+            accts = [self._new_acc(True, True), self._new_acc(True, True)] + \
+                    [self._new_acc(True, True) for _ in range(self.rng.randint(6, 12))]
+        self.cases.append({"id": cid, "kind": kind, "accounts": accts, "victim": victim})
+        print(f"[INJECT] case={cid} typology={kind} victim={victim} nodes={accts}", flush=True)
+
+    def _emit_case(self, c):
+        out, k, a = [], c["kind"], c["accounts"]
+
+        def tx(s, d, amt):
+            if s not in self.blocked and d not in self.blocked:
+                out.append(self._msg(s, d, amt, c["id"], fraud=True))
+
+        if k == "fanin":
+            coll = a[0]
+            for dr in self.rng.sample(a[1:], min(3, len(a) - 1)):
+                tx(dr, coll, self.rng.uniform(3e3, 1.5e4))
+            if self.rng.random() < 0.4:
+                tx(coll, c["victim"], self.rng.uniform(2e4, 8e4))    # cash-out into a legit victim
+        elif k == "chain":
+            i = self.rng.randrange(len(a) - 1)
+            tx(a[i], a[i + 1], self.rng.uniform(5e4, 2e5) * (0.99 ** i))
+            if i == len(a) - 2 and self.rng.random() < 0.4:
+                tx(a[-1], c["victim"], self.rng.uniform(2e4, 8e4))
+        elif k == "ring":
+            i = self.rng.randrange(len(a))
+            tx(a[i], a[(i + 1) % len(a)], self.rng.uniform(5e4, 1.5e5))
+        else:  # smurf
+            src, agg = a[0], a[1]
+            for sm in self.rng.sample(a[2:], min(3, len(a) - 2)):
+                amt = self.rng.uniform(STRUCT_LO, STRUCT_HI)
+                tx(src, sm, amt); tx(sm, agg, amt * 0.98)
+            if self.rng.random() < 0.3:
+                tx(agg, c["victim"], self.rng.uniform(2e4, 8e4))
         return out
+
+    def tick(self, n_legit=5):
+        out = []
+        for _ in range(n_legit):
+            out += self.legit_tx()
+        for c in self.cases:
+            out += self._emit_case(c)
+        return out
+
+    def block(self, acc):
+        with self.lock:
+            if acc in self.blocked:
+                return
+            self.blocked.add(acc)
+            for c in self.cases:
+                if acc in c["accounts"]:
+                    new = self._new_acc(True, True)
+                    c["accounts"] = [new if x == acc else x for x in c["accounts"]]
+                    print(f"[REPLACE] case={c['id']} blocked={acc} new={new}", flush=True)
+
+
+def consume_blocklist(stream, bootstrap, topic):
+    from kafka import KafkaConsumer
+    c = KafkaConsumer(topic, bootstrap_servers=bootstrap, auto_offset_reset="latest",
+                      value_deserializer=lambda b: json.loads(b.decode()))
+    for m in c:
+        acc = (m.value or {}).get("account_id")
+        if acc:
+            print(f"[BLOCK] received {acc}", flush=True); stream.block(acc)
 
 
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bootstrap", default="kafka:9092")
     ap.add_argument("--topic", default="tx_raw")
-    ap.add_argument("--rate", type=float, default=5.0, help="legit tx per second")
-    ap.add_argument("--fraud-every", type=float, default=60.0, help="seconds between fraud bursts")
+    ap.add_argument("--blocklist-topic", default="blocklist")
+    ap.add_argument("--rate", type=float, default=5.0)
+    ap.add_argument("--case-every", type=float, default=45.0, help="seconds between new fraud cases")
     ap.add_argument("--dry-run", action="store_true")
-    ap.add_argument("-n", type=int, default=10, help="dry-run: how many messages to print")
     args = ap.parse_args()
     s = Stream()
 
     if args.dry_run:
-        msgs = []
-        while len(msgs) < args.n:
-            msgs += s.legit()
-        msgs += s.fraud_burst()
-        for m in msgs[:args.n] + msgs[-3:]:
-            print(json.dumps(m, ensure_ascii=False))
+        s.open_case(); s.open_case()
+        for _ in range(3):
+            for m in s.tick()[:4]:
+                print(json.dumps(m, ensure_ascii=False))
+        target = s.cases[0]["accounts"][1]
+        print(f"\n-- simulate blocking {target} --")
+        s.block(target)
+        print("blocked:", s.blocked)
         return
 
     from kafka import KafkaProducer
@@ -101,22 +167,21 @@ def main():
                                  api_version_auto_timeout_ms=10000, retries=5)
             break
         except NoBrokersAvailable:
-            print(f"[producer] kafka not ready, retry {attempt+1}/60…", flush=True)
-            time.sleep(5)
+            print(f"[producer] kafka not ready, retry {attempt+1}/60…", flush=True); time.sleep(5)
     if prod is None:
-        raise SystemExit("kafka unavailable after retries")
-    print(f"producing to {args.bootstrap}/{args.topic} (rate {args.rate}/s)", flush=True)
-    last_fraud = time.time(); sent = 0
+        raise SystemExit("kafka unavailable")
+    threading.Thread(target=consume_blocklist, args=(s, args.bootstrap, args.blocklist_topic),
+                     daemon=True).start()
+    print(f"producing to {args.topic} (rate {args.rate}/s), blocklist <- {args.blocklist_topic}", flush=True)
+    last_case = 0.0; sent = 0
     while True:
-        batch = s.legit()
-        if time.time() - last_fraud >= args.fraud_every:
-            batch += s.fraud_burst(); last_fraud = time.time()
-            print(f"[producer] fraud burst (+{len(batch)} msgs)", flush=True)
-        for m in batch:
+        if time.time() - last_case >= args.case_every:
+            s.open_case(); last_case = time.time()
+        for m in s.tick(n_legit=int(max(args.rate, 1))):
             prod.send(args.topic, m); sent += 1
-        if sent % 200 < len(batch):
-            print(f"[producer] sent ~{sent}", flush=True)
-        time.sleep(1.0 / max(args.rate, 0.1))
+        if sent % 200 < 12:
+            print(f"[producer] sent ~{sent}, active cases {len(s.cases)}", flush=True)
+        time.sleep(1.0)
 
 
 if __name__ == "__main__":

@@ -235,7 +235,7 @@ services:
 
   kafka:
     image: apache/kafka:3.9.0
-    profiles: ["streaming"]
+    profiles: ["streaming", "ibm"]
     ports: ["9092:9092"]
     environment:
       KAFKA_NODE_ID: 1
@@ -248,6 +248,27 @@ services:
       KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
       KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+      KAFKA_AUTO_CREATE_TOPICS_ENABLE: "true"
+
+  kafka-init:
+    image: apache/kafka:3.9.0
+    profiles: ["streaming", "ibm"]
+    depends_on: [kafka]
+    restart: "no"
+    entrypoint: ["/bin/bash", "-c"]
+    command:
+      - |
+        echo "[kafka-init] waiting for broker…"
+        for i in $$(seq 1 60); do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list >/dev/null 2>&1 && break
+          sleep 2
+        done
+        for t in tx_raw blocklist; do
+          /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 \
+            --create --if-not-exists --topic $$t --partitions 1 --replication-factor 1
+        done
+        echo "[kafka-init] topics ready:"
+        /opt/kafka/bin/kafka-topics.sh --bootstrap-server kafka:9092 --list
 
 volumes:
   minio-data:

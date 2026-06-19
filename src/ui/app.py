@@ -114,6 +114,9 @@ if mode == "🔎 Investigate account":
     left, right = st.columns([4, 1.3])
     with left:
         embed(net); st.caption(LEGEND)
+        if g.number_of_nodes() >= max_nodes:
+            st.caption(f"⚠️ Граф обрезан до лимита **Max nodes = {max_nodes}** — поэтому увеличение глубины "
+                       f"дальше может не менять картинку. Подними «Max nodes» или снизь «edges per node» в *advanced*.")
     with right:
         tox = float(attrs.loc[acct, "toxicity"] or 0) if acct in attrs.index else 0.0
         st.metric("dropper toxicity", f"{tox:.2f}")

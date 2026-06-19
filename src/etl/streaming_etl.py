@@ -97,7 +97,10 @@ while True:
       WHEN MATCHED THEN UPDATE SET t.opened_days_ago=s.opened_days_ago, t.is_fraud=s.is_fraud
       WHEN NOT MATCHED THEN INSERT (account_id,opened_days_ago,is_fraud,fraud_role,typology_id,
           node_features,node_embedding,toxicity,emb_version,updated_ts)
-        VALUES (s.account_id,s.opened_days_ago,s.is_fraud,NULL,NULL,array(double(0)),array(double(0)),NULL,0,0)""")
+        VALUES (s.account_id,s.opened_days_ago,s.is_fraud,NULL,NULL,
+                array(double(0),double(0),double(0),double(0),double(0),double(0),
+                      double(0),double(0),double(0),double(0),double(0)),
+                array(double(0)),NULL,0,0)""")
     # 2) node features -> accounts_state.node_features
     spark.sql(f"MERGE INTO {ACC} t USING ({NODE_SRC}) s ON t.account_id=s.account_id "
               f"WHEN MATCHED THEN UPDATE SET t.node_features=s.node_features")

@@ -65,7 +65,10 @@ class IcebergIO:
         self.scores_t = self._scores_table()      # scoring-owned table (no race with ETL)
         self.bs = batch_size
         self.ts_offset = 0.0
-        self.bm = Path(bookmark); self.bm.parent.mkdir(parents=True, exist_ok=True)
+        try:                                       # already-scored ids -> exactly-once via anti-join
+            self.seen = set(self.scored_t.scan(selected_fields=("tx_id",)).to_pandas()["tx_id"])
+        except Exception:
+            self.seen = set()
 
     def _scores_table(self):
         import pyarrow as pa
@@ -85,16 +88,14 @@ class IcebergIO:
     def poll(self):
         from pyiceberg.expressions import EqualTo
         df = self.tx_t.scan(row_filter=EqualTo("ml_status", "FEATURES_READY")).to_pandas()
-        last = float(self.bm.read_text()) if self.bm.exists() else -1
-        df = df[df.ts > last].sort_values("ts")
-        print(f"[reader] FEATURES_READY new (ts>{last:.0f}): {len(df)} rows", flush=True)
+        df = df[~df.tx_id.isin(self.seen)].sort_values("ts")   # only not-yet-scored, any ts order
+        print(f"[reader] FEATURES_READY unscored: {len(df)} rows", flush=True)
         return df[TXCOLS].copy() if len(df) else pd.DataFrame(columns=TXCOLS)
 
     def write_tx(self, df):
         import pyarrow as pa
         self.scored_t.append(pa.Table.from_pandas(df, preserve_index=False))
-        if len(df):
-            self.bm.write_text(str(float(df.ts.max())))
+        self.seen.update(df.tx_id.tolist())
 
     def snapshot_accounts(self, accounts, ids, tox, emb):
         import pyarrow as pa
@@ -163,6 +164,8 @@ def run(io, artifacts, loop, interval, snapshot_every):
         batch = io.poll()
         if len(batch):
             batch = batch.sort_values("ts").reset_index(drop=True)
+            if io.ts_offset == 0:                 # anchor time scale to first data (match training)
+                io.ts_offset = float(batch.ts.min())
             state.ensure(set(batch.source_account) | set(batch.target_account), node_x.shape[1])
             x, N = state.sync(ids, (node_x - mean) / std)   # covers any just-added ids (zeros)
             model.last_ts, model.n_nodes = state.last_ts, N

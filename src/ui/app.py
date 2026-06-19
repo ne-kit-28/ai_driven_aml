@@ -157,6 +157,15 @@ if mode == "🔎 Investigate account":
 # ============================ MONITOR ============================
 else:
     st.markdown("### 📡 Latest suspicious transactions")
+    if st.toggle("🔴 Live (auto-refresh, 5s)", value=False, key="mon_live"):
+        from streamlit_autorefresh import st_autorefresh
+        st_autorefresh(interval=5000, key="mon_tick")
+        try:
+            _t0, _t1 = src.ts_range
+            st.caption(f"🔴 live — обновление каждые 5с · последняя активность: "
+                       f"{pd.to_datetime(_t1, unit='s')} · новые SCORED-транзакции появляются по мере записи scoring-сервисом")
+        except Exception:
+            st.caption("🔴 live — обновление каждые 5с")
     c = st.columns(4)
     thr = c[0].slider("risk threshold", 0.0, 1.0, 0.5, 0.05)
     limit = c[1].number_input("rows", 20, 2000, 200, step=20)

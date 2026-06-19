@@ -1,18 +1,15 @@
 """
-Scoring microservice — the second deployable service.
+Scoring microservice — adapted for a LIVE, growing graph.
 
-Streams FEATURES_READY transactions in chronological micro-batches, scores them
-with the trained TGN-lite (same delayed-message logic as score_export, so scores
-match), advances per-node memory h_v, and writes results back:
-  * per-transaction risk_score  (-> scored_transactions / SCORED)
-  * per-account  toxicity + h_v (-> accounts_state snapshot)
+Each cycle it (1) refreshes the account set + node features from the lake,
+(2) grows the per-node memory h_v for new accounts (stable append-only index),
+(3) scores the new FEATURES_READY batch, (4) appends SCORED + snapshots toxicity.
 
-IO backends (swappable, model core is IO-agnostic):
-  --io parquet : local replay over data/*.parquet           (offline test)
-  --io iceberg : incremental read + append via pyiceberg     (the stand)
+Model params (msg/gru/heads) are loaded once; the memory buffer is managed
+externally so it can grow as new accounts appear.
 
-  python infer_stream.py --io parquet --data data --out data
-  python infer_stream.py --io iceberg --loop --interval 60
+  python infer_stream.py --io parquet --data data --out data        # one cycle (test)
+  python infer_stream.py --io iceberg --loop --interval 60           # live
 """
 from __future__ import annotations
 import argparse, json, time
@@ -30,118 +27,164 @@ TXCOLS = ["tx_id", "source_account", "target_account", "amount", "ts"]
 
 # ----------------------------- IO backends -----------------------------
 class ParquetIO:
-    """Local replay: read transactions.parquet in ts order, write scored parquet."""
     def __init__(self, data, out, batch_size):
         self.tx = pd.read_parquet(f"{data}/transactions.parquet").sort_values("ts").reset_index(drop=True)
         self.accounts = pd.read_parquet(f"{data}/accounts.parquet")
         self.out = Path(out); self.bs = batch_size
-        self.ts_offset = float(self.tx.ts.min())     # match training's time normalization
-        self._scored = []
+        self.ts_offset = float(self.tx.ts.min())
+        self._served = False; self._scored = []
 
-    def features(self):
+    def account_features(self):
         node_x, idx = build_node_features(self.accounts, self.tx)
-        return node_x, idx, self.accounts
+        ids = [a for a, _ in sorted(idx.items(), key=lambda kv: kv[1])]
+        return ids, node_x, self.accounts
 
-    def batches(self, loop):
-        for i in range(0, len(self.tx), self.bs):
-            yield self.tx.iloc[i:i + self.bs][TXCOLS].copy()
-        # local data is finite; nothing more to stream
+    def poll(self):
+        if self._served:
+            return pd.DataFrame(columns=TXCOLS)
+        self._served = True
+        return self.tx[TXCOLS].copy()
 
     def write_tx(self, df):
         self._scored.append(df)
         pd.concat(self._scored).to_parquet(self.out / "scored_transactions.parquet", index=False)
 
-    def snapshot_accounts(self, accounts, toxicity, emb):
-        a = accounts.assign(toxicity=toxicity, node_embedding=list(emb))
+    def snapshot_accounts(self, accounts, ids, tox, emb):
+        t = pd.Series(tox, index=ids)
+        a = accounts.assign(toxicity=accounts.account_id.map(t))
         a.to_parquet(self.out / "scored_accounts.parquet", index=False)
 
 
 class IcebergIO:
-    """Stand: incremental read of FEATURES_READY, append SCORED back. Runs on the lake."""
     def __init__(self, batch_size, bookmark="/state/bookmark.txt"):
         from pyiceberg.catalog import load_catalog
-        self.cat = load_catalog("default")        # configured via env (PYICEBERG_CATALOG__*)
+        self.cat = load_catalog("default")
         self.tx_t = self.cat.load_table("banking.transactions")
         self.scored_t = self.cat.load_table("banking.scored_transactions")
         self.acc_t = self.cat.load_table("banking.accounts_state")
         self.bs = batch_size
-        self.ts_offset = float(self.tx_t.scan().to_pandas().ts.min())  # global time origin
+        self.ts_offset = 0.0
         self.bm = Path(bookmark); self.bm.parent.mkdir(parents=True, exist_ok=True)
 
-    def features(self):
-        acc = self.acc_t.scan().to_pandas()        # node_features come from Stage 2 (accounts_state)
-        # accounts_state already carries the Stage-2 feature vector; expand to matrix
-        node_x = np.stack(acc["node_features"].to_numpy())
-        idx = {a: i for i, a in enumerate(acc["account_id"])}
-        return node_x.astype(np.float32), idx, acc
+    def account_features(self):
+        acc = self.acc_t.scan().to_pandas()
+        node_x = np.stack(acc["node_features"].to_numpy()).astype(np.float32)
+        return acc["account_id"].tolist(), node_x, acc
 
-    def batches(self, loop):
+    def poll(self):
         from pyiceberg.expressions import EqualTo
-        while True:
-            df = self.tx_t.scan(row_filter=EqualTo("ml_status", "FEATURES_READY")).to_pandas()
-            last = float(self.bm.read_text()) if self.bm.exists() else -1
-            df = df[df.ts > last].sort_values("ts")
-            print(f"[reader] FEATURES_READY new (ts>{last:.0f}): {len(df)} rows", flush=True)
-            for i in range(0, len(df), self.bs):
-                yield df.iloc[i:i + self.bs][TXCOLS].copy()
-            if not loop:
-                break
-            print(f"[reader] idle, sleeping {self._interval}s "
-                  f"(no new FEATURES_READY — run seed, or reset the bookmark)", flush=True)
-            time.sleep(self._interval)
+        df = self.tx_t.scan(row_filter=EqualTo("ml_status", "FEATURES_READY")).to_pandas()
+        last = float(self.bm.read_text()) if self.bm.exists() else -1
+        df = df[df.ts > last].sort_values("ts")
+        print(f"[reader] FEATURES_READY new (ts>{last:.0f}): {len(df)} rows", flush=True)
+        return df[TXCOLS].copy() if len(df) else pd.DataFrame(columns=TXCOLS)
 
     def write_tx(self, df):
         import pyarrow as pa
         self.scored_t.append(pa.Table.from_pandas(df, preserve_index=False))
-        self.bm.write_text(str(float(df.ts.max())))
+        if len(df):
+            self.bm.write_text(str(float(df.ts.max())))
 
-    def snapshot_accounts(self, accounts, toxicity, emb):
+    def snapshot_accounts(self, accounts, ids, tox, emb):
         import pyarrow as pa
-        snap = accounts.assign(toxicity=toxicity, node_embedding=list(emb),
-                               updated_ts=int(time.time()))
-        # full-node snapshot -> overwrite keeps one latest row per account (MVP; prod: merge/upsert)
+        t = dict(zip(ids, tox)); e = {a: emb[i].tolist() for i, a in enumerate(ids)}
+        snap = accounts.copy()
+        snap["toxicity"] = snap["account_id"].map(t)
+        snap["node_embedding"] = snap["account_id"].map(e)
+        snap["updated_ts"] = int(time.time())
         self.acc_t.overwrite(pa.Table.from_pandas(snap, preserve_index=False))
 
 
-# ----------------------------- scoring loop -----------------------------
-def run(io, artifacts, loop, snapshot_every):
+# ----------------------------- live state -----------------------------
+class MemoryState:
+    """Persistent append-only account index + growable memory/last_ts."""
+    def __init__(self, mem_dim):
+        self.mem_dim = mem_dim; self.idx = {}
+        self.mem = torch.zeros(0, mem_dim); self.last_ts = torch.zeros(0)
+
+    def sync(self, ids, node_x_std):
+        new = [a for a in ids if a not in self.idx]
+        for a in new:
+            self.idx[a] = len(self.idx)
+        if new:
+            self.mem = torch.cat([self.mem, torch.zeros(len(new), self.mem_dim)], 0)
+            self.last_ts = torch.cat([self.last_ts, torch.zeros(len(new))], 0)
+        N = len(self.idx)
+        x = torch.zeros(N, node_x_std.shape[1])
+        for p, a in enumerate(ids):
+            x[self.idx[a]] = torch.tensor(node_x_std[p])
+        return x, N
+
+    def ensure(self, accts, node_dim):
+        new = [a for a in accts if a not in self.idx]
+        for a in new:
+            self.idx[a] = len(self.idx)
+        if new:
+            self.mem = torch.cat([self.mem, torch.zeros(len(new), self.mem_dim)], 0)
+            self.last_ts = torch.cat([self.last_ts, torch.zeros(len(new))], 0)
+
+
+def load_model(artifacts, node_dim, edge_dim, mem):
+    sd = torch.load(f"{artifacts}/tgnlite.pt", weights_only=True)
+    for k in ["memory", "last_ts", "seen"]:
+        sd.pop(k, None)
+    model = TGNLite(1, node_dim, edge_dim, mem=mem)
+    model.load_state_dict(sd, strict=False); model.eval()
+    return model
+
+
+def run(io, artifacts, loop, interval, snapshot_every):
     meta = json.load(open(f"{artifacts}/tgnlite_meta.json"))
-    node_x, idx, accounts = io.features()
     mean, std = np.array(meta["node_mean"], np.float32), np.array(meta["node_std"], np.float32)
-    x = torch.tensor((node_x - mean) / std)
-
-    model = TGNLite(len(idx), node_x.shape[1], len(meta["edge_feature_names"]), mem=meta["mem"])
-    model.load_state_dict(torch.load(f"{artifacts}/tgnlite.pt", weights_only=True)); model.eval()
-
     e_mean, e_std = meta.get("edge_logamt_mean"), meta.get("edge_logamt_std")
-    nt, et = meta.get("node_temp", 1.0), meta.get("edge_temp", 1.0)   # temperature scaling
-    mem = model.memory; prev = None; n_batches = 0
-    for batch in io.batches(loop):
-        if batch.empty:
-            continue
-        src = torch.tensor(batch.source_account.map(idx).to_numpy(), dtype=torch.long)
-        dst = torch.tensor(batch.target_account.map(idx).to_numpy(), dtype=torch.long)
-        ef = torch.tensor(build_edge_features(batch, e_mean, e_std))
-        ts = torch.tensor(batch.ts.to_numpy(), dtype=torch.float32)
-        ts_n = (ts - io.ts_offset) / 86400.0
-        with torch.no_grad():
-            mem_in = mem if prev is None else model.updated_memory(mem, *prev, x)
-            risk = torch.sigmoid(model.score_edges(mem_in, src, dst, ef, x) / et).numpy()
-            mem = mem_in.detach(); model.memory = mem
-            prev = (src, dst, ts_n, ef)
-        out = batch.assign(risk_score=risk, ml_status="SCORED")
-        io.write_tx(out)
-        n_batches += 1
-        if n_batches % snapshot_every == 0:
-            with torch.no_grad():
-                tox = torch.sigmoid(model.score_nodes(model.memory, x) / nt).numpy()
-            io.snapshot_accounts(accounts, tox, model.memory.numpy())
-        print(f"batch {n_batches}: scored {len(out)} tx | mean risk {risk.mean():.3f}", flush=True)
+    nt, et = meta.get("node_temp", 1.0), meta.get("edge_temp", 1.0)
+    state = MemoryState(meta["mem"]); model = None; prev = None; cyc = 0
 
+    while True:
+        ids, node_x, accounts = io.account_features()
+        if model is None:
+            model = load_model(artifacts, node_x.shape[1], len(meta["edge_feature_names"]), meta["mem"])
+        x, N = state.sync(ids, (node_x - mean) / std)
+
+        batch = io.poll()
+        if len(batch):
+            batch = batch.sort_values("ts").reset_index(drop=True)
+            state.ensure(set(batch.source_account) | set(batch.target_account), node_x.shape[1])
+            x, N = state.sync(ids, (node_x - mean) / std)   # covers any just-added ids (zeros)
+            model.last_ts, model.n_nodes = state.last_ts, N
+            risks = []
+            for i in range(0, len(batch), io.bs):     # chronological sub-batches: memory evolves
+                ch = batch.iloc[i:i + io.bs]
+                src = torch.tensor(ch.source_account.map(state.idx).to_numpy(), dtype=torch.long)
+                dst = torch.tensor(ch.target_account.map(state.idx).to_numpy(), dtype=torch.long)
+                ef = torch.tensor(build_edge_features(ch, e_mean, e_std))
+                ts = (torch.tensor(ch.ts.to_numpy(), dtype=torch.float32) - io.ts_offset) / 86400.0
+                with torch.no_grad():
+                    mem_in = state.mem if prev is None else model.updated_memory(state.mem, *prev, x)
+                    risks.append(torch.sigmoid(model.score_edges(mem_in, src, dst, ef, x) / et).numpy())
+                    state.mem = mem_in.detach(); model.last_ts = state.last_ts; model.n_nodes = N
+                    prev = (src, dst, ts, ef)
+            io.write_tx(batch.assign(risk_score=np.concatenate(risks), ml_status="SCORED"))
+            cyc += 1
+            if cyc % snapshot_every == 0:
+                _snapshot(io, model, state, x, accounts, ids, nt)
+            print(f"cycle {cyc}: scored {len(batch)} | accounts {N} | mean risk "
+                  f"{float(np.concatenate(risks).mean()):.3f}", flush=True)
+        if not loop:
+            break
+        time.sleep(interval)
+
+    _snapshot(io, model, state, x, accounts, ids, nt)
+    print("done.", flush=True)
+
+
+def _snapshot(io, model, state, x, accounts, ids, nt):
+    model.memory, model.n_nodes = state.mem, len(state.idx)
     with torch.no_grad():
-        tox = torch.sigmoid(model.score_nodes(model.memory, x) / nt).numpy()
-    io.snapshot_accounts(accounts, tox, model.memory.numpy())
-    print(f"done: {n_batches} batches", flush=True)
+        tox_all = torch.sigmoid(model.score_nodes(state.mem, x) / nt).numpy()
+    tox = np.array([tox_all[state.idx[a]] for a in ids])
+    emb = np.stack([state.mem[state.idx[a]].numpy() for a in ids])
+    io.snapshot_accounts(accounts, ids, tox, emb)
 
 
 def main():
@@ -149,15 +192,13 @@ def main():
     ap.add_argument("--io", choices=["parquet", "iceberg"], default="parquet")
     ap.add_argument("--data", default="data"); ap.add_argument("--out", default="data")
     ap.add_argument("--artifacts", default="src/ml/artifacts")
-    ap.add_argument("--batch-size", type=int, default=128)
+    ap.add_argument("--batch-size", type=int, default=512)
     ap.add_argument("--loop", action="store_true"); ap.add_argument("--interval", type=int, default=60)
-    ap.add_argument("--snapshot-every", type=int, default=10)
+    ap.add_argument("--snapshot-every", type=int, default=1)
     args = ap.parse_args()
-    if args.io == "parquet":
-        io = ParquetIO(args.data, args.out, args.batch_size)
-    else:
-        io = IcebergIO(args.batch_size); io._interval = args.interval
-    run(io, args.artifacts, args.loop, args.snapshot_every)
+    io = ParquetIO(args.data, args.out, args.batch_size) if args.io == "parquet" \
+        else IcebergIO(args.batch_size)
+    run(io, args.artifacts, args.loop, args.interval, args.snapshot_every)
 
 
 if __name__ == "__main__":

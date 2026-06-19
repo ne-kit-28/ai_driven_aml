@@ -53,7 +53,7 @@ feedback edges. Two paths exist and must not be mixed:
 cd infra
 docker compose down -v
 docker compose --profile core --profile streaming up -d --build
-# run src/etl/streaming_etl.py in the notebook (http://localhost:8888)
+# open src/etl/streaming_etl.ipynb in Jupyter (http://localhost:8888) and run the cells
 docker compose --profile scoring up -d --build scoring
 # dashboard: http://localhost:8501
 ```

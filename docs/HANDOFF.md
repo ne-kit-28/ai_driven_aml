@@ -88,7 +88,7 @@ Two paths exist — **don't mix them**:
 ## 6. Done
 - Lakehouse infra (MinIO+Iceberg+Hive+Trino+Spark), all pinned, verified interop.
 - Synthetic generator (hardened: hubs, amount/age overlap, contamination, 4 typologies) + ground truth.
-- Stage 2 feature pipeline: SQL (`features.sql`), offline `stage2.py`, and live notebook ETL (`streaming_etl.py`).
+- Stage 2 feature pipeline: SQL (`features.sql`), offline `stage2.py`, and live notebook ETL (`streaming_etl.ipynb`).
 - TGN-lite model: train/score, calibrated toxicity, exactly-once live scoring with growable memory.
 - Dashboard: **Investigate** (ego-graph any depth, AI SAR + in/out flow analysis, block), **Suspicious nodes** (live list + graph of most toxic nodes + block), **Monitor** (live suspicious tx), **Verification** (recall/health vs ground truth).
 - Live MVP: Kafka producer (persistent fraud + `[INJECT]`/`[REPLACE]` logs, blocklist-aware), Spark streaming ingest + 5-min ETL, scoring loop, Trino-backed UI.
@@ -110,7 +110,7 @@ cd infra
 docker compose down -v                                    # wipe everything
 docker compose --profile core --profile streaming up -d --build
 docker compose logs -f hive-metastore                      # wait "Starting Hive Metastore Server"
-# Jupyter http://localhost:8888 (token aml): run src/etl/streaming_etl.py cells
+# Jupyter http://localhost:8888 (token aml): open src/etl/streaming_etl.ipynb and run the cells
 #   1 -> 1b(reset) -> 2(DDL) -> 3(tx stream) -> 3b(blocklist stream) -> 4(ETL loop)
 docker compose --profile scoring up -d --build scoring
 # UI http://localhost:8501  (Investigate / Suspicious nodes / Monitor / Verification)
@@ -121,7 +121,7 @@ Offline-only demo (no stand internals): dashboard works on shipped `data/scored_
 ## 9. File map
 - `infra/docker-compose.yml`, `infra/{trino,hive,spark,pyspark}/…` — stack
 - `src/ingest/producer.py` — Kafka producer (persistent fraud, blocklist-aware)
-- `src/etl/streaming_etl.py` — notebook cells (Spark streaming ingest + 5-min ETL)
+- `src/etl/streaming_etl.ipynb` — notebook (Spark streaming ingest + 5-min ETL)
 - `src/features/{features.sql,stage2.py}` — offline feature pipeline
 - `src/ml/{features.py,stream_model.py,train_temporal.py,score_export.py,infer_stream.py}` — model + scoring
 - `src/ml/artifacts/tgnlite.pt(+meta)` — trained model

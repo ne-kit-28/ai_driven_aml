@@ -178,7 +178,12 @@ else:
     m[0].metric("suspicious tx (≥ thr)", susp_n)
     m[1].metric("rows shown", len(feed))
     top = src.top_alerts(1)
-    m[2].metric("top toxic account", f"{top['account_id'].iloc[0][-5:]} · {top['toxicity'].iloc[0]:.2f}")
+    if len(top):
+        _tt = top["toxicity"].iloc[0]
+        val = f"{top['account_id'].iloc[0][-5:]} · " + (f"{_tt:.2f}" if _tt is not None and _tt == _tt else "—")
+    else:
+        val = "—"
+    m[2].metric("top toxic account", val)
 
     disp = feed.copy(); disp["ts"] = pd.to_datetime(disp["ts"], unit="s")
     st.dataframe(disp.rename(columns={"source_account": "from", "target_account": "to",

@@ -11,7 +11,8 @@ WITH out_agg AS (
   FROM {TX} GROUP BY source_account),
 in_agg AS (
   SELECT target_account AS acc, count(*) AS in_degree, sum(amount) AS in_sum,
-         avg(amount) AS in_mean, count(DISTINCT source_account) AS distinct_in_cp
+         avg(amount) AS in_mean, count(DISTINCT source_account) AS distinct_in_cp,
+         avg(CASE WHEN amount BETWEEN 9000 AND 9500 THEN 1.0 ELSE 0.0 END) AS in_structuring_ratio
   FROM {TX} GROUP BY target_account)
 SELECT a.account_id,
        coalesce(o.out_degree, 0)                              AS out_degree,
@@ -25,7 +26,8 @@ SELECT a.account_id,
        a.opened_days_ago                                      AS account_age_days,
        coalesce(o.structuring_ratio, 0)                       AS structuring_ratio,
        sign(coalesce(i.in_sum,0) - coalesce(o.out_sum,0))
-         * ln(1 + abs(coalesce(i.in_sum,0) - coalesce(o.out_sum,0))) AS log_net_flow_abs
+         * ln(1 + abs(coalesce(i.in_sum,0) - coalesce(o.out_sum,0))) AS log_net_flow_abs,
+       coalesce(i.in_structuring_ratio, 0)                    AS in_structuring_ratio
 FROM {ACC} a
 LEFT JOIN out_agg o ON a.account_id = o.acc
 LEFT JOIN in_agg  i ON a.account_id = i.acc;

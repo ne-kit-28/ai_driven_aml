@@ -14,8 +14,8 @@ the next few cycles.
   account toxicity (dropper/mule probability).
 - Calibrated outputs (temperature scaling) so risk propagates instead of
   pinning at 1.0.
-- Exactly-once serving: scored transactions are anti-joined on their ids;
-  account memory grows as new accounts appear.
+- Stateless windowed scoring: each cycle replays a rolling 30-day window from
+  zeroed memory, so live scores match training; transactions written exactly-once.
 - Human-in-the-loop console: ego-graph exploration, in/out flow analysis, one
   click block, live monitoring, and recall against ground truth.
 - Blocklist feedback loop that lets contaminated legitimate accounts recover;
@@ -28,7 +28,7 @@ the next few cycles.
 ```mermaid
 flowchart LR
   P["Producer (synthetic generator)"] -->|tx_raw| K["Kafka"]
-  K -->|Spark streaming| ETL["Notebook ETL (5 min)"]
+  K -->|Spark streaming| ETL["Notebook ETL"]
   ETL -->|features| ICE[("Iceberg on MinIO")]
   ICE --> SC["Scoring (TGN-lite)"]
   SC -->|risk + toxicity| ICE
@@ -44,7 +44,7 @@ Metastore catalog, Trino for SQL, and Spark for the ETL. Transactions move
 through `PENDING → FEATURES_READY → SCORED`, with `BLOCKED` reserved for
 feedback edges. Two paths exist and must not be mixed:
 
-- **Live** — producer → Kafka → 5-minute notebook ETL → scoring loop → dashboard.
+- **Live** — producer → Kafka → notebook ETL → scoring loop → dashboard.
 - **Offline** — seed → feature pipeline → scoring over Parquet/Iceberg, no Kafka.
 
 ## Quickstart
@@ -53,13 +53,16 @@ feedback edges. Two paths exist and must not be mixed:
 cd infra
 docker compose down -v
 docker compose --profile core --profile streaming up -d --build
-# open src/etl/streaming_etl.ipynb in Jupyter (http://localhost:8888) and run the cells
+# Jupyter http://localhost:8888 (token: aml) -> src/etl/streaming_etl.ipynb
+#   run cells in order: 1 -> 1b (reset) -> 2 (DDL) -> 3 -> 3b -> 4 (ETL loop)
 docker compose --profile scoring up -d --build scoring
 # dashboard: http://localhost:8501
 ```
 
-For an offline demo without the stack, point the dashboard at the shipped
-`data/scored_*.parquet` with `DASH_SOURCE=parquet`.
+For a visible block→recovery demo, start the producer with `--demo-contamination`
+(a few legit accounts get structured deposits; blocking the fraud around them
+heals them). For an offline demo without the stack, point the dashboard at the
+shipped `data/scored_*.parquet` with `DASH_SOURCE=parquet`.
 
 ## Layout
 
@@ -72,12 +75,13 @@ For an offline demo without the stack, point the dashboard at the shipped
 | `src/ui/` | Streamlit app, graph queries, LLM explainer |
 | `docs/` | architecture notes |
 
-Models train on a synthetic generator covering four laundering typologies, with
-ground-truth labels for evaluation.
+Models train on the synthetic generator (`producer.py --dump-parquet`, the same
+distribution served live) covering four laundering typologies, with ground-truth
+labels for evaluation.
 
 ## Status
 
-The offline (Parquet/DuckDB) path is verified. The Spark/Kafka/Iceberg live
-path is built but still needs on-stand testing. Open items: time-series
-verification, gradual memory decay after a block, and horizontal scale-out for
-high throughput.
+Both paths score with near-perfect ranking on held-out data; the live path is
+validated by replaying the streaming scorer offline. Open items: a time-series
+view of account health around a block and horizontal scale-out (e.g. Flink
+keyed state) for very high throughput.

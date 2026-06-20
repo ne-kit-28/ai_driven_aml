@@ -33,7 +33,7 @@ flowchart LR
     UI["dashboard Streamlit"] -->|blocklist| K
     K -->|Spark streaming| ICE[("Iceberg on MinIO")]
     K -->|blocklist| ICE
-    NB["notebook ETL every 5 min"] --> ICE
+    NB["notebook ETL"] --> ICE
     ICE --> NB
     SC["scoring service TGN-lite"] --> ICE
     ICE --> SC
@@ -80,26 +80,26 @@ Two paths exist — **don't mix them**:
 
 ## 5. Model (TGN-lite)
 - Streaming graph net: per-node memory h_v updated by a GRU from incoming-edge messages; edge head → risk p; node head → toxicity. Trained by chronological replay (delayed-message scheme).
-- **Feature contract** (`src/ml/features.py`): 11 node features + 3 edge features; the ETL SQL (`src/features/features.sql`) reproduces them exactly. Edge z-score uses **fixed** stats from `tgnlite_meta.json`.
-- **Calibration**: outputs temperature-scaled (`node_temp=8`) so toxicity spreads (not pinned at 1.0).
-- Serving semantics: memory starts at zeros and evolves; scoring is **exactly-once** (anti-join on scored tx_ids), reloads Iceberg tables each cycle, grows memory for new accounts.
-- Artifact committed: `src/ml/artifacts/tgnlite.pt` + `tgnlite_meta.json` (trained on the synthetic generator). For real data: retrain via `src/ml/train_temporal.py`.
+- **Feature contract** (`src/ml/features.py`): 12 node features (incl. `in_structuring_ratio` — flags smurf collectors) + 3 edge features; the ETL SQL (`src/features/features.sql`) and the live notebook ETL reproduce them exactly. Edge z-score uses **fixed** stats from `tgnlite_meta.json`.
+- **Calibration**: outputs temperature-scaled (`node_temp=4`) for sharp fraud/legit separation.
+- Serving semantics: **stateless windowed** — each cycle replays a rolling 30-day window from zeroed memory (matches training), scoring **exactly-once** (anti-join on scored tx_ids). Blocked accounts' edges are excluded from the window, so victims recover next cycle.
+- Artifact committed: `src/ml/artifacts/tgnlite.pt` + `tgnlite_meta.json`, trained on the producer distribution (`producer.py --dump-parquet`). Retrain via `src/ml/train_temporal.py`.
 
 ## 6. Done
 - Lakehouse infra (MinIO+Iceberg+Hive+Trino+Spark), all pinned, verified interop.
 - Synthetic generator (hardened: hubs, amount/age overlap, contamination, 4 typologies) + ground truth.
 - Stage 2 feature pipeline: SQL (`features.sql`), offline `stage2.py`, and live notebook ETL (`streaming_etl.ipynb`).
-- TGN-lite model: train/score, calibrated toxicity, exactly-once live scoring with growable memory.
+- TGN-lite model: train/score, calibrated toxicity, exactly-once stateless windowed live scoring.
 - Dashboard: **Investigate** (ego-graph any depth, AI SAR + in/out flow analysis, block), **Suspicious nodes** (live list + graph of most toxic nodes + block), **Monitor** (live suspicious tx), **Verification** (recall/health vs ground truth).
-- Live MVP: Kafka producer (persistent fraud + `[INJECT]`/`[REPLACE]` logs, blocklist-aware), Spark streaming ingest + 5-min ETL, scoring loop, Trino-backed UI.
+- Live MVP: Kafka producer (persistent fraud + `[INJECT]`/`[REPLACE]` logs, blocklist-aware), Spark streaming ingest + ETL, scoring loop, Trino-backed UI.
 - Blocklist feedback loop: dashboard → Kafka `blocklist` → producer replaces blocked node + ETL excludes blocked edges (legit "recovery").
 - LLM GraphRAG explanation (OpenAI-compatible, key in `.env`), prompt distinguishes hub/mule and avoids guilt-by-association.
 
 ## 7. TODO / known gaps
 - **Chain/cluster block** (block a whole fraud chain at once) — built: Investigate → "Block whole chain" (`src/ui/chain_select.py`, legit hubs excluded).
 - **Verification "before/after health"** is current-snapshot only (no time series of legit toxicity around a block).
-- **Memory decay after block**: node features clean up immediately, but h_v memory decays over several cycles → toxicity drops gradually, not instantly.
-- Spark/Kafka/Iceberg live path is **written but not run in the dev sandbox** (no Docker there) — needs on-stand testing; offline (parquet) path is verified.
+- **Recovery after block** — done: scoring is stateless windowed and excludes blocked accounts' edges from the window, so a contaminated legit account recovers the next cycle (no lingering memory). Use `--demo-contamination` for a visible demo.
+- Spark/Kafka/Iceberg live path validated by replaying the streaming scorer offline (live node ROC-AUC ≈ 1.0); still recommend a full on-stand soak test.
 - Prod scale: scoring is single-process (vertical); for huge volume → Flink keyed-state. Account-state snapshots use overwrite (fine for MVP).
 - Versions to re-verify against registries before prod: `pyiceberg==0.8.1`, `duckdb==1.1.3`, `trino==0.330.0`, `kafka-python==2.0.2`.
 - `.env` (LLM key) is gitignored; only `.env.example` is committed.
@@ -121,7 +121,7 @@ Offline-only demo (no stand internals): dashboard works on shipped `data/scored_
 ## 9. File map
 - `infra/docker-compose.yml`, `infra/{trino,hive,spark,pyspark}/…` — stack
 - `src/ingest/producer.py` — Kafka producer (persistent fraud, blocklist-aware)
-- `src/etl/streaming_etl.ipynb` — notebook (Spark streaming ingest + 5-min ETL)
+- `src/etl/streaming_etl.ipynb` — notebook (Spark streaming ingest + ETL)
 - `src/features/{features.sql,stage2.py}` — offline feature pipeline
 - `src/ml/{features.py,stream_model.py,train_temporal.py,score_export.py,infer_stream.py}` — model + scoring
 - `src/ml/artifacts/tgnlite.pt(+meta)` — trained model

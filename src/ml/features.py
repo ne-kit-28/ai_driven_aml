@@ -18,6 +18,7 @@ NODE_FEATURE_NAMES = [
     "out_amount_mean", "in_amount_mean",
     "distinct_out_cp", "distinct_in_cp",
     "account_age_days", "structuring_ratio", "log_net_flow_abs",
+    "in_structuring_ratio",   # share of INCOMING in the structuring band — flags smurf collectors
 ]
 EDGE_FEATURE_NAMES = ["log_amount", "in_structuring_band", "amount_zscore"]
 
@@ -36,8 +37,9 @@ def build_node_features(accounts: pd.DataFrame, tx: pd.DataFrame):
     out_mean, in_mean = out["amount"].mean(), inc["amount"].mean()
     out_cp = out["target_account"].nunique()
     in_cp = inc["source_account"].nunique()
-    struct = tx.assign(b=tx["amount"].between(STRUCT_LO, STRUCT_HI)) \
-               .groupby("source_account")["b"].mean()
+    band = tx.assign(b=tx["amount"].between(STRUCT_LO, STRUCT_HI))
+    struct = band.groupby("source_account")["b"].mean()
+    struct_in = band.groupby("target_account")["b"].mean()   # incoming structuring (smurf collectors)
 
     a = accounts.set_index("account_id")
     df = pd.DataFrame(index=ids)
@@ -53,6 +55,7 @@ def build_node_features(accounts: pd.DataFrame, tx: pd.DataFrame):
     df["structuring_ratio"] = struct.reindex(ids).fillna(0)
     net = in_sum.reindex(ids).fillna(0) - out_sum.reindex(ids).fillna(0)
     df["log_net_flow_abs"] = np.sign(net) * np.log1p(net.abs())
+    df["in_structuring_ratio"] = struct_in.reindex(ids).fillna(0)
 
     return df[NODE_FEATURE_NAMES].to_numpy(dtype=np.float32), idx
 

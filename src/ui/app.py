@@ -24,9 +24,10 @@ from llm_explain import build_evidence, build_flow_evidence, explain, FLOW_PROMP
 st.set_page_config(page_title="AML Graph", layout="wide")
 MODES = ["Investigate", "Suspicious accounts", "Live monitor", "Verification"]
 BLOCKLIST = Path(os.environ.get("BLOCKLIST_PATH", "/tmp/aml_blocklist.parquet"))
-GRAPH_CFG = Config(width=1150, height=560, directed=True, physics=True,
-                   nodeHighlightBehavior=True, highlightColor="#F2A900",
-                   collapsible=False, backgroundColor="#10141A")
+# staticGraphWithDragAndDrop: keep our precomputed layout, no physics drift, still draggable + zoomable
+GRAPH_CFG = Config(width=1150, height=560, directed=True, physics=False,
+                   staticGraphWithDragAndDrop=True, nodeHighlightBehavior=True,
+                   highlightColor="#F2A900", collapsible=False, backgroundColor="#10141A")
 LEGEND = ("Node colour = account toxicity (red = high, green = low) · size = degree · "
           "edge colour = transaction risk · click a node to investigate · drag to rearrange · scroll to zoom.")
 
@@ -86,8 +87,9 @@ def goto_investigate(account):
 
 def graph_panel(edges, attrs, alert, key):
     nspec, espec, g = build_graph(edges, attrs, alert=alert, blocked=blocked)
-    nodes = [Node(id=n["id"], label=n["label"], size=n["size"], shape=n["shape"], title=n["title"],
-                  color={"background": n["color"], "border": n["border"]}, borderWidth=n["borderWidth"])
+    nodes = [Node(id=n["id"], label=n["label"], size=n["size"], shape="dot", title=n["title"],
+                  x=n["x"], y=n["y"], color={"background": n["color"], "border": n["border"]},
+                  borderWidth=n["borderWidth"])
              for n in nspec]
     eds = [Edge(source=e["source"], target=e["target"], color=e["color"],
                 width=e["width"], title=e["title"]) for e in espec]
@@ -128,10 +130,7 @@ blocked = load_blocked(src)
 
 # ---- sidebar: view selector + per-view filters (top to bottom) ----
 st.sidebar.title("AML Graph")
-if hasattr(st, "segmented_control"):
-    mode = st.sidebar.segmented_control("View", MODES, key="nav")
-else:
-    mode = st.sidebar.radio("View", MODES, key="nav")
+mode = st.sidebar.radio("View", MODES, key="nav")   # vertical list, one option per line
 mode = mode or st.session_state.get("nav") or MODES[0]
 st.sidebar.divider()
 st.sidebar.markdown("**Filters**")

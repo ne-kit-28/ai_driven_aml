@@ -191,15 +191,18 @@ def build_graph(edges, attrs, alert=None, blocked=()):
         g.add_edge(e.source_account, e.target_account,
                    risk=float(e.risk_score or 0), amount=float(e.amount), n_tx=int(e.n_tx))
 
+    pos = nx.spring_layout(g, seed=42, k=1.3 / (len(g) ** 0.5)) if g.number_of_nodes() else {}
     node_specs = []
     for n, d in g.nodes(data=True):
         is_blk, is_alert = n in blocked, n == alert
+        x, y = pos.get(n, (0.0, 0.0))
         node_specs.append({
-            "id": str(n), "label": str(n)[-5:], "size": 12 + 2.2 * g.degree(n),
+            "id": str(n), "label": str(n)[-5:], "size": (16 if is_alert else 12) + 2.2 * g.degree(n),
+            "x": float(x) * 900.0, "y": float(y) * 900.0,
             "color": "#5b6573" if is_blk else _hex(TOX, d["tox"]),
-            "border": "#FFFFFF" if (is_blk or is_alert) else "#26324a",
-            "borderWidth": 4 if (is_blk or is_alert) else 1,
-            "shape": "diamond" if is_blk else ("star" if is_alert else "dot"),
+            # simple ring marker for the selected/blocked node — no star
+            "border": "#F2A900" if is_alert else ("#E4572E" if is_blk else "#26324a"),
+            "borderWidth": 5 if (is_alert or is_blk) else 1,
             "title": (f"{n} | role: {d['role'] or '—'} | toxicity: {d['tox']:.2f} | "
                       f"fraud (ground truth): {d['fraud']}" + (" | BLOCKED" if is_blk else "")),
         })

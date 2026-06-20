@@ -195,10 +195,16 @@ if mode == "Investigate":
                               key="chain_thr", help="legitimate hubs are always excluded")
         chain = select_chain(edges, attrs, acct, tox_threshold=chain_thr)
         to_block = sorted(chain - blocked)
+        around = [a for a in to_block if a != acct]            # the chain minus this account
         st.caption(f"Chain: {len(chain)} accounts · {len(to_block)} not yet blocked")
         if to_block and st.button(f"Block whole chain ({len(to_block)})", use_container_width=True):
             block_accounts(to_block, "suspected fraud chain")
             st.success(f"Blocked {len(to_block)} accounts"); st.rerun()
+        if around and st.button(f"Block fraud around it, keep this account ({len(around)})",
+                                use_container_width=True,
+                                help="for a contaminated legit account: block the surrounding fraud so it recovers"):
+            block_accounts(around, "fraud feeding a victim")
+            st.success(f"Blocked {len(around)} surrounding accounts; {acct} kept"); st.rerun()
 
     st.markdown("#### Transactions of this account (highest risk first)")
     incident = src.incident_edges({acct})

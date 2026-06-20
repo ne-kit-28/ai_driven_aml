@@ -34,7 +34,7 @@ class Stream:
         self.victims = self.rng.sample(self.legit, n_victims)   # legit targets of persistent fraud
         self.demo = False                                       # --demo-contamination (visible recovery)
         self.demo_victims = self.rng.sample(self.legit, 3)      # legit accounts fed structured deposits
-        self._demo_ring = []                                    # small fixed fraud ring feeding the victims
+        self._demo_rings = {}                                   # victim -> its own small fraud ring
         self.cases = []                 # active persistent fraud cases (bounded)
         self.max_cases = max_cases      # retire the oldest beyond this -> fraud stays a minority
         self.case_activity = case_activity   # prob a case emits on a given tick (burstier, less volume)
@@ -130,13 +130,15 @@ class Stream:
         return out
 
     def _demo_tick(self):
-        """Visible recovery: a small FIXED fraud ring feeds the demo victims structured
-        deposits. Blocking that ring (one 'Block whole chain') fully heals the victims."""
-        if not self._demo_ring:
-            self._demo_ring = [self._new_acc(fraud=True, fresh=True) for _ in range(5)]
+        """Visible recovery: each demo victim has its OWN small fraud ring feeding it
+        structured deposits. Investigate the victim and 'Block fraud around it' -> the ring
+        is removed and only that victim heals (no other victim is touched)."""
+        if not self._demo_rings:
+            self._demo_rings = {v: [self._new_acc(fraud=True, fresh=True) for _ in range(4)]
+                                for v in self.demo_victims}
         out = []
-        for dv in self.demo_victims:
-            for r in self._demo_ring:
+        for dv, ring in self._demo_rings.items():
+            for r in ring:
                 if not edge_blocked(r, dv, self.blocked):
                     out.append(self._msg(r, dv, self.rng.uniform(STRUCT_LO, STRUCT_HI),
                                          case_id="demo_ring", fraud=True))

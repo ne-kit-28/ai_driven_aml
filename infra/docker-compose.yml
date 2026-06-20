@@ -217,7 +217,9 @@ services:
     image: aml/producer:latest
     profiles: ["streaming"]
     depends_on: [kafka]
-    command: ["python", "producer.py", "--bootstrap", "kafka:9092", "--rate", "5", "--case-every", "45"]
+    # balanced defaults (rate 80, case-every 90, sim-step 7200, max-cases 8) live in producer.py.
+    # For a visible block->recovery demo on stage, append: "--demo-contamination"
+    command: ["python", "producer.py", "--bootstrap", "kafka:9092"]
 
   kafka:
     image: apache/kafka:3.9.0

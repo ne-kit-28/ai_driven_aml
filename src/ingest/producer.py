@@ -32,6 +32,8 @@ class Stream:
         self.legit = [self._new_acc() for _ in range(n_legit)]
         self.hubs = [self._new_acc() for _ in range(n_hubs)]
         self.victims = self.rng.sample(self.legit, n_victims)   # legit targets of persistent fraud
+        self.demo = False                                       # --demo-contamination (visible recovery)
+        self.demo_victims = self.rng.sample(self.legit, 3)      # legit accounts fed structured deposits
         self.cases = []                 # active persistent fraud cases (bounded)
         self.max_cases = max_cases      # retire the oldest beyond this -> fraud stays a minority
         self.case_activity = case_activity   # prob a case emits on a given tick (burstier, less volume)
@@ -124,6 +126,11 @@ class Stream:
                 tx(src, sm, amt); tx(sm, agg, amt * 0.98)
             if self.rng.random() < 0.3:
                 tx(agg, c["victim"], self.rng.uniform(2e4, 8e4))
+
+        if self.demo and a:   # demo recovery: feed a legit victim heavy STRUCTURED deposits so the
+            dv = self.rng.choice(self.demo_victims)   # model (correctly) lights it up; blocking heals it
+            for s_ in self.rng.sample(a, min(3, len(a))):
+                tx(s_, dv, self.rng.uniform(STRUCT_LO, STRUCT_HI))
         return out
 
     def tick(self, n_legit=80):
@@ -204,9 +211,12 @@ def main():
     ap.add_argument("--dry-run", action="store_true")
     ap.add_argument("--dump-parquet", help="offline: write a labelled training set to this dir and exit")
     ap.add_argument("--dump-days", type=int, default=45, help="sim-days to generate for the dump")
+    ap.add_argument("--demo-contamination", action="store_true",
+                    help="feed a few legit accounts structured deposits for a visible block->recovery demo")
     args = ap.parse_args()
     s = Stream(max_cases=args.max_cases)
     s.sim_step = args.sim_step
+    s.demo = args.demo_contamination
 
     if args.dump_parquet:
         dump_parquet(s, args.dump_parquet, args.dump_days, n_legit=int(max(args.rate, 1)))

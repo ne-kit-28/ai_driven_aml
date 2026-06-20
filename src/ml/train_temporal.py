@@ -115,7 +115,7 @@ def main():
         json.dump({"node_feature_names": NODE_FEATURE_NAMES, "edge_feature_names": EDGE_FEATURE_NAMES,
                    "node_mean": mean.tolist(), "node_std": std.tolist(), "mem": args.mem,
                    "edge_logamt_mean": e_mean, "edge_logamt_std": e_std,
-                   "node_temp": 8.0, "edge_temp": 1.0},   # temperature-scale outputs -> spread, not 0/1
+                   "node_temp": 4.0, "edge_temp": 1.0},   # temperature-scale outputs (sharper separation)
                   open(out / "tgnlite_meta.json", "w"), indent=2)
         print(f"saved -> {out}/tgnlite.pt")
 

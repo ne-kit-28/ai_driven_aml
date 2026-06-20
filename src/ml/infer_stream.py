@@ -154,7 +154,7 @@ def load_model(artifacts, node_dim, edge_dim, mem):
     return model
 
 
-def run(io, artifacts, loop, interval, snapshot_every):
+def run(io, artifacts, loop, interval, snapshot_every, mem_decay=1.0):
     meta = json.load(open(f"{artifacts}/tgnlite_meta.json"))
     mean, std = np.array(meta["node_mean"], np.float32), np.array(meta["node_std"], np.float32)
     e_mean, e_std = meta.get("edge_logamt_mean"), meta.get("edge_logamt_std")
@@ -171,6 +171,8 @@ def run(io, artifacts, loop, interval, snapshot_every):
         if model is None:
             model = load_model(artifacts, node_x.shape[1], len(meta["edge_feature_names"]), meta["mem"])
         x, N = state.sync(ids, (node_x - mean) / std)
+        if mem_decay < 1.0 and state.mem.numel():   # fade memory each cycle: quiet accounts recover,
+            state.mem.mul_(mem_decay)               # active fraud is re-boosted by its new edges
 
         batch = io.poll()
         if len(batch):
@@ -224,10 +226,12 @@ def main():
     ap.add_argument("--batch-size", type=int, default=512)
     ap.add_argument("--loop", action="store_true"); ap.add_argument("--interval", type=int, default=60)
     ap.add_argument("--snapshot-every", type=int, default=1)
+    ap.add_argument("--mem-decay", type=float, default=0.97,
+                    help="per-cycle memory decay (1.0 = off); lets quiet accounts recover")
     args = ap.parse_args()
     io = ParquetIO(args.data, args.out, args.batch_size) if args.io == "parquet" \
         else IcebergIO(args.batch_size)
-    run(io, args.artifacts, args.loop, args.interval, args.snapshot_every)
+    run(io, args.artifacts, args.loop, args.interval, args.snapshot_every, args.mem_decay)
 
 
 if __name__ == "__main__":

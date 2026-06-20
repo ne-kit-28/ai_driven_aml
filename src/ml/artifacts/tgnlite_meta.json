@@ -49,6 +49,6 @@
   "mem": 64,
   "edge_logamt_mean": 7.031729589156455,
   "edge_logamt_std": 1.8203473240658867,
-  "node_temp": 8.0,
+  "node_temp": 4.0,
   "edge_temp": 1.0
 }

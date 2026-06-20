@@ -7,30 +7,34 @@ along the highest-risk edges per node. Legit hubs (many low-risk edges) are not
 traversed through, so deep traversal reconstructs the laundering path end-to-end
 instead of exploding into a hairball.
 
+build_graph(): renders an interactive Plotly network. Plotly is used (not a
+static embed) so a node click is returned to Streamlit via on_select — clicking
+a node sends it straight to the investigation field.
+
 Sources share one interface:
   ParquetSource  — local scored parquet (offline demo, supports a time cursor)
   TrinoSource    — Iceberg via Trino (MVP / stand)
 """
 from __future__ import annotations
+
 import matplotlib
 matplotlib.use("Agg")
 import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import networkx as nx
 import pandas as pd
-from pyvis.network import Network
+import plotly.graph_objects as go
 
 from graph_agg import aggregate_edges
 
 TOX = cm.get_cmap("RdYlGn_r")
-RISK = mcolors.LinearSegmentedColormap.from_list("risk", ["#9aa0a6", "#d62728"])
 
 
 class ParquetSource:
     def __init__(self, data="data"):
         self.tx = pd.read_parquet(f"{data}/scored_transactions.parquet")
         self.acc = pd.read_parquet(f"{data}/scored_accounts.parquet").set_index("account_id")
-        self.max_ts = None                       # time cursor for the real-time replay demo
+        self.max_ts = None
 
     @property
     def ts_range(self):
@@ -66,6 +70,9 @@ class ParquetSource:
     def scored_accounts_full(self):
         return self.acc.reset_index()[["account_id", "is_fraud", "typology_id", "fraud_role", "toxicity"]]
 
+    def blocked_accounts(self):
+        return set()
+
 
 class TrinoSource:
     def __init__(self, host="trino", port=8080, user="dashboard",
@@ -84,7 +91,7 @@ class TrinoSource:
     def ts_range(self):
         r = self._q("SELECT min(ts), max(ts) FROM scored_transactions")
         a, b = r.iloc[0, 0], r.iloc[0, 1]
-        if a is None or b is None:      # no SCORED rows yet
+        if a is None or b is None:
             return 0, 0
         return int(a), int(b)
 
@@ -131,6 +138,12 @@ class TrinoSource:
         return self._q("SELECT a.account_id, a.is_fraud, a.typology_id, a.fraud_role, s.toxicity "
                        "FROM accounts_state a LEFT JOIN account_scores s ON a.account_id=s.account_id")
 
+    def blocked_accounts(self):
+        try:
+            return set(self._q("SELECT account_id FROM blocklist")["account_id"])
+        except Exception:
+            return set()
+
 
 def trace(source, alert, depth=4, fanout=6, max_nodes=80):
     """Follow the top-risk edges from `alert`, both directions, up to `depth`."""
@@ -156,37 +169,57 @@ def trace(source, alert, depth=4, fanout=6, max_nodes=80):
     return ed, source.node_attrs(set(ed.source_account) | set(ed.target_account) | {alert})
 
 
-def _hex(cmap, v):
-    return mcolors.to_hex(cmap(float(max(0.0, min(1.0, v)))))
+def _hex(v):
+    return mcolors.to_hex(TOX(float(max(0.0, min(1.0, v)))))
 
 
-def build_network(edges, attrs, alert=None, blocked=()):
+def build_graph(edges, attrs, alert=None, blocked=()):
+    """Return (plotly Figure, networkx graph). Node clicks come back via customdata."""
+    blocked = set(blocked)
     g = nx.DiGraph()
     for a, row in attrs.iterrows():
-        g.add_node(a, tox=float(row.get("toxicity", 0) or 0), role=str(row.get("fraud_role", "")),
+        g.add_node(a, tox=float(row.get("toxicity", 0) or 0), role=str(row.get("fraud_role", "") or ""),
                    fraud=int(row.get("is_fraud", 0) or 0))
     for _, e in aggregate_edges(edges).iterrows():
+        for endp in (e.source_account, e.target_account):
+            if endp not in g:
+                g.add_node(endp, tox=0.0, role="", fraud=0)
         g.add_edge(e.source_account, e.target_account,
-                   amount=float(e.amount), risk=float(e.risk_score or 0), n_tx=int(e.n_tx))
-    pos = nx.spring_layout(g, seed=42, k=1.3)
-    if alert in pos:                                       # centre the investigated account
-        cx, cy = pos[alert]; pos = {n: (p[0] - cx, p[1] - cy) for n, p in pos.items()}
-    net = Network(height="720px", width="100%", directed=True,
-                  bgcolor="#10141a", font_color="#e8e8e8", cdn_resources="in_line")
-    net.toggle_physics(False)
-    for n, d in g.nodes(data=True):
-        is_blocked = n in blocked
-        net.add_node(n, label=("⛔" if is_blocked else "") + n[-5:],
-                     x=float(pos[n][0] * 950), y=float(pos[n][1] * 950),
-                     size=12 + 2.0 * g.degree(n),
-                     color={"background": _hex(TOX, d["tox"]),
-                            "border": "#ffffff" if is_blocked or n == alert else "#333"},
-                     borderWidth=6 if is_blocked else (5 if n == alert else 1),
-                     title=f"{n}\nrole: {d['role']}\ntoxicity: {d['tox']:.2f}"
-                           f"\nfraud(gt): {d['fraud']}" + ("\nBLOCKED" if is_blocked else ""))
+                   risk=float(e.risk_score or 0), amount=float(e.amount), n_tx=int(e.n_tx))
+
+    if g.number_of_nodes() == 0:
+        return go.Figure(), g
+    pos = nx.spring_layout(g, seed=42, k=1.1 / (len(g) ** 0.5))
+
+    lo_x, lo_y, hi_x, hi_y = [], [], [], []
     for u, v, d in g.edges(data=True):
-        ntx = d.get("n_tx", 1)
-        net.add_edge(u, v, color=_hex(RISK, d["risk"]),
-                     width=1 + 1.6 * (ntx ** 0.5) + 3.5 * d["risk"],
-                     title=f"{ntx} tx · total {d['amount']:.0f} · peak risk {d['risk']:.2f}")
-    return net, g
+        x0, y0 = pos[u]; x1, y1 = pos[v]
+        (hi_x if d["risk"] >= 0.7 else lo_x).extend([x0, x1, None])
+        (hi_y if d["risk"] >= 0.7 else lo_y).extend([y0, y1, None])
+    traces = [
+        go.Scatter(x=lo_x, y=lo_y, mode="lines", hoverinfo="none",
+                   line=dict(width=1, color="rgba(130,144,168,0.40)")),
+        go.Scatter(x=hi_x, y=hi_y, mode="lines", hoverinfo="none",
+                   line=dict(width=2.4, color="rgba(228,87,46,0.85)")),
+    ]
+
+    nx_, ny_, col, siz, txt, cd, lc, lw = [], [], [], [], [], [], [], []
+    for n, d in g.nodes(data=True):
+        x, y = pos[n]; nx_.append(x); ny_.append(y)
+        is_blk, is_alert = n in blocked, n == alert
+        col.append("#5b6573" if is_blk else _hex(d["tox"]))
+        siz.append(14 + 2.2 * g.degree(n))
+        txt.append(f"{n}<br>role: {d['role'] or '—'}<br>toxicity: {d['tox']:.2f}"
+                   f"<br>fraud (ground truth): {d['fraud']}" + ("<br>BLOCKED" if is_blk else ""))
+        cd.append([n])
+        lc.append("#FFFFFF" if (is_blk or is_alert) else "#2b3a4a")
+        lw.append(3 if (is_blk or is_alert) else 1)
+    traces.append(go.Scatter(
+        x=nx_, y=ny_, mode="markers", hoverinfo="text", hovertext=txt, customdata=cd,
+        marker=dict(color=col, size=siz, line=dict(color=lc, width=lw))))
+
+    fig = go.Figure(traces)
+    fig.update_layout(showlegend=False, paper_bgcolor="#10141A", plot_bgcolor="#10141A",
+                      margin=dict(l=0, r=0, t=0, b=0), height=560, dragmode="pan",
+                      xaxis=dict(visible=False), yaxis=dict(visible=False))
+    return fig, g

@@ -2,11 +2,11 @@
 AML compliance dashboard (microservice UI).
 
 Views: Investigate · Suspicious accounts · Live monitor · Verification.
-Click any node in a graph to send it to the investigation field at the top.
+Filters live in the sidebar; click any graph node to investigate it. Graphs are
+draggable and zoomable (vis.js via streamlit-agraph).
 
   DASH_SOURCE=parquet|trino   DATA_DIR=...   TRINO_HOST=trino
   BLOCKLIST_PATH=/tmp/aml_blocklist.parquet   (must be writable)
-  streamlit run app.py --server.port 8501 --server.address 0.0.0.0
 """
 import os
 import json
@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 import streamlit as st
+from streamlit_agraph import agraph, Node, Edge, Config
 
 from graph_query import ParquetSource, TrinoSource, trace, build_graph
 from chain_select import select_chain
@@ -23,9 +24,11 @@ from llm_explain import build_evidence, build_flow_evidence, explain, FLOW_PROMP
 st.set_page_config(page_title="AML Graph", layout="wide")
 MODES = ["Investigate", "Suspicious accounts", "Live monitor", "Verification"]
 BLOCKLIST = Path(os.environ.get("BLOCKLIST_PATH", "/tmp/aml_blocklist.parquet"))
-LEGEND = ("Node colour = account toxicity (red high, green low) · size = degree · "
-          "red edges = high-risk transfers · white ring = investigated / blocked · "
-          "click a node to investigate it.")
+GRAPH_CFG = Config(width=1150, height=560, directed=True, physics=True,
+                   nodeHighlightBehavior=True, highlightColor="#F2A900",
+                   collapsible=False, backgroundColor="#10141A")
+LEGEND = ("Node colour = account toxicity (red = high, green = low) · size = degree · "
+          "edge colour = transaction risk · click a node to investigate · drag to rearrange · scroll to zoom.")
 
 
 @st.cache_resource
@@ -60,7 +63,7 @@ def block_accounts(accounts, reason="suspected fraud", officer="officer"):
         df = pd.concat([pd.read_parquet(BLOCKLIST), rows]) if BLOCKLIST.exists() else rows
         df.drop_duplicates("account_id", keep="last").to_parquet(BLOCKLIST, index=False)
     except OSError:
-        pass   # read-only FS (e.g. data mounted ro) — Kafka publish below is the source of truth
+        pass   # read-only FS — Kafka publish below is the source of truth on the stand
     bs = os.environ.get("KAFKA_BOOTSTRAP")
     if bs:
         try:
@@ -82,20 +85,17 @@ def goto_investigate(account):
 
 
 def graph_panel(edges, attrs, alert, key):
-    """Render the interactive graph; a node click navigates to investigate it."""
-    fig, g = build_graph(edges, attrs, alert=alert, blocked=blocked)
-    ev = st.plotly_chart(fig, use_container_width=True, on_select="rerun", key=key,
-                         config={"displayModeBar": False})
-    st.caption(f"{g.number_of_nodes()} accounts · {g.number_of_edges()} relationships. {LEGEND}")
-    try:
-        pts = ev["selection"]["points"]
-    except (TypeError, KeyError):
-        pts = getattr(getattr(ev, "selection", None), "points", None) or []
-    if pts:
-        cd = pts[0].get("customdata")
-        clicked = cd[0] if isinstance(cd, (list, tuple)) else cd
-        if clicked and clicked != alert and clicked != st.session_state.get("acct"):
-            goto_investigate(clicked)
+    nspec, espec, g = build_graph(edges, attrs, alert=alert, blocked=blocked)
+    nodes = [Node(id=n["id"], label=n["label"], size=n["size"], shape=n["shape"], title=n["title"],
+                  color={"background": n["color"], "border": n["border"]}, borderWidth=n["borderWidth"])
+             for n in nspec]
+    eds = [Edge(source=e["source"], target=e["target"], color=e["color"],
+                width=e["width"], title=e["title"]) for e in espec]
+    st.caption(f"{g.number_of_nodes()} accounts · {g.number_of_edges()} relationships")
+    clicked = agraph(nodes=nodes, edges=eds, config=GRAPH_CFG)
+    st.caption(LEGEND)
+    if clicked and clicked != alert and clicked != st.session_state.get("acct"):
+        goto_investigate(clicked)
     return g
 
 
@@ -115,7 +115,6 @@ except FileNotFoundError:
              "or set `DASH_SOURCE=trino` to read the lake.")
     st.stop()
 
-# lake readiness probe
 try:
     _probe = src.top_alerts(1)
 except Exception as e:
@@ -124,23 +123,20 @@ except Exception as e:
 if _probe.empty:
     st.info("No accounts in the lake yet — run the seed service first.")
     st.stop()
-try:
-    default_acct = _probe["account_id"].iloc[0]
-except Exception:
-    default_acct = ""
-st.session_state.setdefault("acct", default_acct)
-
+st.session_state.setdefault("acct", _probe["account_id"].iloc[0])
 blocked = load_blocked(src)
 
-# ---- sidebar: modern view selector + replay ----
+# ---- sidebar: view selector + per-view filters (top to bottom) ----
 st.sidebar.title("AML Graph")
 if hasattr(st, "segmented_control"):
     mode = st.sidebar.segmented_control("View", MODES, key="nav")
 else:
-    mode = st.sidebar.radio("View", MODES, key="nav", horizontal=False)
+    mode = st.sidebar.radio("View", MODES, key="nav")
 mode = mode or st.session_state.get("nav") or MODES[0]
+st.sidebar.divider()
+st.sidebar.markdown("**Filters**")
 
-if st.sidebar.toggle("Live replay (real-time simulation)", value=False):
+if st.sidebar.toggle("Live replay (simulate real-time arrival)", value=False):
     from streamlit_autorefresh import st_autorefresh
     st_autorefresh(interval=2500, key="tick")
     t0, t1 = src.ts_range
@@ -160,14 +156,12 @@ if "toxicity" in _probe and bool(_probe["toxicity"].isna().all()):
 
 # ============================ INVESTIGATE ============================
 if mode == "Investigate":
-    top = st.columns([4, 1])
-    acct = top[0].text_input("Account to investigate", key="acct",
-                             placeholder="e.g. ACC0000123").strip()
-    depth = top[1].number_input("Trace depth", 1, 15, 4)
-    with st.sidebar.expander("Graph detail"):
-        fanout = st.slider("edges per node (by risk)", 2, 15, 6)
-        max_nodes = st.slider("max nodes", 20, 250, 90)
+    depth = st.sidebar.slider("How many hops to trace", 1, 15, 4)
+    fanout = st.sidebar.slider("Top transfers to follow per account", 2, 15, 6)
+    max_nodes = st.sidebar.slider("Max accounts in the graph", 20, 250, 90)
 
+    acct = st.text_input("Account to investigate", key="acct",
+                         placeholder="e.g. ACC0000123").strip()
     if not acct:
         st.info("Enter an account, or click a node in any graph to investigate it.")
         st.stop()
@@ -178,36 +172,36 @@ if mode == "Investigate":
     st.subheader(f"{acct} — ego-network (depth {depth})")
     edges, attrs = trace(src, acct, depth=int(depth), fanout=fanout, max_nodes=max_nodes)
 
-    left, right = st.columns([4, 1.3])
-    with left:
-        g = graph_panel(edges, attrs, alert=acct, key="g_invest")
-        if g.number_of_nodes() >= max_nodes:
-            st.caption(f"Graph capped at max nodes = {max_nodes}; raise it in the sidebar to see more.")
-    with right:
-        tox = float(attrs.loc[acct, "toxicity"] or 0) if acct in attrs.index else 0.0
-        st.metric("Account toxicity", f"{tox:.2f}")
-        st.metric("Nodes / transfers", f"{g.number_of_nodes()} / {g.number_of_edges()}")
+    tox = float(attrs.loc[acct, "toxicity"] or 0) if acct in attrs.index else 0.0
+    k = st.columns(3)
+    k[0].metric("Account toxicity", f"{tox:.2f}")
+    k[1].metric("Status", "BLOCKED" if acct in blocked else "active")
+    k[2].metric("Accounts in view", len(attrs))
+
+    g = graph_panel(edges, attrs, alert=acct, key="g_invest")
+    if g.number_of_nodes() >= max_nodes:
+        st.caption(f"Graph capped at {max_nodes} accounts; raise the limit in the sidebar to see more.")
+
+    st.markdown("#### Take action")
+    a1, a2 = st.columns(2)
+    with a1:
         if acct in blocked:
-            st.error("Already blocked")
+            st.info("This account is already blocked.")
         else:
             reason = st.text_input("Block reason", "suspected dropper")
-            if st.button("Block account", type="primary", use_container_width=True):
+            if st.button("Block this account", type="primary", use_container_width=True):
                 block_accounts([acct], reason); st.success(f"{acct} blocked"); st.rerun()
-
-        st.divider()
-        st.markdown("**Block the whole chain**")
-        chain_thr = st.slider("include nodes with toxicity ≥", 0.0, 1.0, 0.5, 0.05,
-                              key="chain_thr", help="legit hubs are always excluded")
+    with a2:
+        chain_thr = st.slider("Chain: include accounts with toxicity ≥", 0.0, 1.0, 0.5, 0.05,
+                              key="chain_thr", help="legitimate hubs are always excluded")
         chain = select_chain(edges, attrs, acct, tox_threshold=chain_thr)
         to_block = sorted(chain - blocked)
         st.caption(f"Chain: {len(chain)} accounts · {len(to_block)} not yet blocked")
-        with st.expander("chain members"):
-            st.write(to_block or "—")
-        if to_block and st.button(f"Block chain ({len(to_block)})", use_container_width=True):
+        if to_block and st.button(f"Block whole chain ({len(to_block)})", use_container_width=True):
             block_accounts(to_block, "suspected fraud chain")
             st.success(f"Blocked {len(to_block)} accounts"); st.rerun()
 
-    st.markdown("#### Transactions of this account (by risk)")
+    st.markdown("#### Transactions of this account (highest risk first)")
     incident = src.incident_edges({acct})
     inc = incident.sort_values("risk_score", ascending=False).head(50).copy()
     inc["ts"] = pd.to_datetime(inc["ts"], unit="s")
@@ -223,8 +217,8 @@ if mode == "Investigate":
     if bcol[1].button("In / out flow analysis", key="flow_btn"):
         with st.spinner("Analysing the account's flows…"):
             cps = set(incident.source_account) | set(incident.target_account) | {acct}
-            fattrs = src.node_attrs(cps)
-            st.session_state["flow"] = explain(build_flow_evidence(acct, fattrs, incident), system=FLOW_PROMPT)
+            st.session_state["flow"] = explain(build_flow_evidence(acct, src.node_attrs(cps), incident),
+                                               system=FLOW_PROMPT)
             st.session_state["flow_acct"] = acct
     if st.session_state.get("sar") and st.session_state.get("sar_acct") == acct:
         st.markdown("**SAR verdict:**"); st.markdown(st.session_state["sar"])
@@ -233,29 +227,31 @@ if mode == "Investigate":
 
 # ============================ SUSPICIOUS ACCOUNTS ============================
 elif mode == "Suspicious accounts":
-    st.subheader("Suspicious accounts, ranked by toxicity")
-    if st.toggle("Live (auto-refresh 5s)", value=False, key="nodes_live"):
+    thr = st.sidebar.slider("Minimum account toxicity", 0.0, 1.0, 0.5, 0.05)
+    ktop = st.sidebar.slider("Accounts to show in the network", 5, 40, 15)
+    if st.sidebar.toggle("Auto-refresh (5s)", value=False, key="nodes_live"):
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=5000, key="nodes_tick")
-    thr = st.slider("toxicity threshold", 0.0, 1.0, 0.5, 0.05)
+
+    st.subheader("Suspicious accounts, ranked by toxicity")
     acc = src.scored_accounts_full()
     acc = acc[acc.toxicity.notna()]
     flagged = acc[acc.toxicity >= thr].sort_values("toxicity", ascending=False)
     m = st.columns(3)
-    m[0].metric("flagged (≥ threshold)", len(flagged))
-    m[1].metric("blocked", len(blocked))
-    m[2].metric("total scored", len(acc))
+    m[0].metric("Flagged (≥ threshold)", len(flagged))
+    m[1].metric("Blocked", len(blocked))
+    m[2].metric("Total scored", len(acc))
+
     st.dataframe(flagged[["account_id", "fraud_role", "is_fraud", "toxicity"]].head(200),
                  hide_index=True, height=320)
     cpick = st.columns([3, 1, 1])
-    pick = cpick[0].selectbox("account", flagged["account_id"].tolist()) if len(flagged) else None
+    pick = cpick[0].selectbox("Pick an account", flagged["account_id"].tolist()) if len(flagged) else None
     if pick and cpick[1].button("Investigate", use_container_width=True):
         goto_investigate(pick)
     if pick and cpick[2].button("Block", type="primary", use_container_width=True):
         block_accounts([pick], "suspected dropper"); st.success(f"{pick} blocked"); st.rerun()
 
     st.markdown("#### Network of the most toxic accounts")
-    ktop = st.slider("top toxic accounts to show", 5, 40, 15)
     seeds = flagged["account_id"].head(ktop).tolist()
     if seeds:
         ed = src.incident_edges(set(seeds)).sort_values("risk_score", ascending=False).head(150)
@@ -266,60 +262,102 @@ elif mode == "Suspicious accounts":
 
 # ============================ VERIFICATION ============================
 elif mode == "Verification":
-    st.subheader("Verification — model vs ground truth")
-    thr = st.slider("toxicity threshold", 0.0, 1.0, 0.5, 0.05)
+    thr = st.sidebar.slider("Minimum account toxicity (alert threshold)", 0.0, 1.0, 0.5, 0.05)
+
+    st.subheader("Verification — does the model catch the known fraud?")
+    st.caption("Ground truth is the labelled fraud accounts. This view measures how well the model's "
+               "account toxicity separates fraud from legitimate accounts.")
     acc = src.scored_accounts_full()
     acc = acc[acc.toxicity.notna()]
     if acc.empty:
         st.info("No scores yet — run ETL + scoring."); st.stop()
     fr, le = acc[acc.is_fraud == 1], acc[acc.is_fraud == 0]
-    m = st.columns(4)
-    m[0].metric("recall (fraud ≥ thr)", f"{(fr.toxicity >= thr).mean():.2f}" if len(fr) else "—")
-    m[1].metric("fraud mean toxicity", f"{fr.toxicity.mean():.2f}" if len(fr) else "—")
-    m[2].metric("legit mean toxicity", f"{le.toxicity.mean():.2f}" if len(le) else "—")
-    m[3].metric("blocked", len(blocked))
-    st.markdown("#### Recall by typology")
+
+    # rank-based ROC-AUC (threshold-independent; meaningful even before memory warms up)
+    def roc_auc(pos, neg):
+        if len(pos) == 0 or len(neg) == 0:
+            return float("nan")
+        r = pd.concat([pos, neg]).rank(method="average")
+        return (r.iloc[:len(pos)].sum() - len(pos) * (len(pos) + 1) / 2) / (len(pos) * len(neg))
+
+    auc = roc_auc(fr.toxicity, le.toxicity)
+    tp = int((fr.toxicity >= thr).sum()); fn = len(fr) - tp
+    fp = int((le.toxicity >= thr).sum()); tn = len(le) - fp
+    prec = tp / (tp + fp) if (tp + fp) else float("nan")
+    rec = tp / (tp + fn) if (tp + fn) else float("nan")
+
+    k = st.columns(4)
+    k[0].metric("Ranking quality (ROC-AUC)", f"{auc:.3f}",
+                help="How well toxicity ranks fraud above legit. 1.0 = perfect, 0.5 = random.")
+    k[1].metric("Precision @ threshold", f"{prec:.0%}" if prec == prec else "—",
+                help="Of accounts the model flags, how many are truly fraud.")
+    k[2].metric("Recall @ threshold", f"{rec:.0%}" if rec == rec else "—",
+                help="Of all fraud accounts, how many the model flags.")
+    k[3].metric("Mean toxicity: fraud vs legit",
+                f"{fr.toxicity.mean():.2f} / {le.toxicity.mean():.2f}" if len(fr) and len(le) else "—",
+                help="The gap between these two is the separation the model achieves.")
+
+    if len(fr) and fr.toxicity.max() < 0.10:
+        st.info("Model memory is still warming up — toxicity is low across the board. Ranking quality "
+                "above is already meaningful; threshold metrics will rise as scoring runs more cycles.")
+
+    st.markdown("#### At the current alert threshold")
+    cc = st.columns(4)
+    cc[0].metric("Fraud caught", tp)
+    cc[1].metric("Fraud missed", fn)
+    cc[2].metric("False alarms", fp)
+    cc[3].metric("Legit cleared", tn)
+
+    st.markdown("#### Toxicity distribution — fraud vs legit")
+    bedges = [i / 10 for i in range(11)]
+    labels = [f"{int(bedges[i]*100)}–{int(bedges[i+1]*100)}%" for i in range(10)]
+    frb = pd.cut(fr.toxicity, bedges, labels=labels, include_lowest=True).value_counts().reindex(labels, fill_value=0)
+    leb = pd.cut(le.toxicity, bedges, labels=labels, include_lowest=True).value_counts().reindex(labels, fill_value=0)
+    dist = pd.DataFrame({"fraud": frb, "legit": leb})
+    st.bar_chart(dist, color=["#E4572E", "#2BB673"])
+    st.caption("A working model pushes the red (fraud) bars to the right and the green (legit) bars to the left.")
+
+    st.markdown("#### Recall by laundering typology")
     typ = fr.copy()
-    typ["case"] = typ["typology_id"].fillna("?").str.split("_").str[0]
-    rep = typ.groupby("case").apply(
-        lambda g: pd.Series({"accounts": len(g), "caught (≥thr)": int((g.toxicity >= thr).sum()),
+    typ["typology"] = typ["typology_id"].fillna("?").str.split("_").str[0]
+    rep = typ.groupby("typology").apply(
+        lambda g: pd.Series({"fraud accounts": len(g),
+                             "caught (≥ thr)": int((g.toxicity >= thr).sum()),
                              "recall": round((g.toxicity >= thr).mean(), 2),
-                             "max_toxicity": round(g.toxicity.max(), 2)})).reset_index()
+                             "max toxicity": round(g.toxicity.max(), 2)})).reset_index()
     st.dataframe(rep, hide_index=True)
-    st.caption("Recall rising and legit mean toxicity falling after blocks means the system is working.")
 
 # ============================ LIVE MONITOR ============================
 else:
-    st.subheader("Latest suspicious transactions")
-    if st.toggle("Live (auto-refresh 5s)", value=False, key="mon_live"):
+    thr = st.sidebar.slider("Minimum transaction risk", 0.0, 1.0, 0.5, 0.05)
+    limit = st.sidebar.number_input("Rows to show", 20, 2000, 200, step=20)
+    only_susp = not st.sidebar.toggle("Include low-risk transactions", value=False)
+    show_graph = st.sidebar.toggle("Show network graph", value=True)
+    gn = st.sidebar.slider("Max transactions in the network", 50, 600, 200, 25, key="mon_graph_n")
+    if st.sidebar.toggle("Auto-refresh (5s)", value=False, key="mon_live"):
         from streamlit_autorefresh import st_autorefresh
         st_autorefresh(interval=5000, key="mon_tick")
-    c = st.columns(4)
-    thr = c[0].slider("risk threshold", 0.0, 1.0, 0.5, 0.05)
-    limit = c[1].number_input("rows", 20, 2000, 200, step=20)
-    only_susp = not c[2].toggle("show all", value=False)
-    show_graph = c[3].toggle("show network", value=True)
 
+    st.subheader("Latest suspicious transactions")
     feed = src.recent(min_risk=thr, limit=int(limit), only_susp=only_susp).copy()
     susp_n = int(src.recent(min_risk=thr, limit=100000, only_susp=True).shape[0])
     m = st.columns(3)
-    m[0].metric("suspicious tx (≥ thr)", susp_n)
-    m[1].metric("rows shown", len(feed))
+    m[0].metric("Suspicious tx (≥ threshold)", susp_n)
+    m[1].metric("Rows shown", len(feed))
     top = src.top_alerts(1)
     if len(top):
         _tt = top["toxicity"].iloc[0]
         val = f"{top['account_id'].iloc[0][-5:]} · " + (f"{_tt:.2f}" if _tt is not None and _tt == _tt else "—")
     else:
         val = "—"
-    m[2].metric("top toxic account", val)
+    m[2].metric("Top toxic account", val)
 
     disp = feed.copy(); disp["ts"] = pd.to_datetime(disp["ts"], unit="s")
     st.dataframe(disp.rename(columns={"source_account": "from", "target_account": "to",
                                       "risk_score": "risk"}), hide_index=True, height=300)
 
     if show_graph and not feed.empty:
-        st.markdown("#### Top suspicious network")
-        gn = st.slider("transactions in graph", 50, 600, 200, 25, key="mon_graph_n")
+        st.markdown("#### Network of the riskiest transactions")
         ed = src.top_risk_edges(gn)
         nodes = set(ed.source_account) | set(ed.target_account)
         graph_panel(ed, src.node_attrs(nodes), alert=None, key="g_mon")

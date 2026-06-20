@@ -23,11 +23,11 @@ import matplotlib.cm as cm
 import matplotlib.colors as mcolors
 import networkx as nx
 import pandas as pd
-import plotly.graph_objects as go
 
 from graph_agg import aggregate_edges
 
 TOX = cm.get_cmap("RdYlGn_r")
+RISK = mcolors.LinearSegmentedColormap.from_list("risk", ["#7f8a9b", "#E4572E"])
 
 
 class ParquetSource:
@@ -169,12 +169,16 @@ def trace(source, alert, depth=4, fanout=6, max_nodes=80):
     return ed, source.node_attrs(set(ed.source_account) | set(ed.target_account) | {alert})
 
 
-def _hex(v):
-    return mcolors.to_hex(TOX(float(max(0.0, min(1.0, v)))))
+def _hex(cmap, v):
+    return mcolors.to_hex(cmap(float(max(0.0, min(1.0, v)))))
 
 
 def build_graph(edges, attrs, alert=None, blocked=()):
-    """Return (plotly Figure, networkx graph). Node clicks come back via customdata."""
+    """Return (node_specs, edge_specs, networkx graph) for an interactive renderer.
+
+    Specs are plain dicts so the module stays renderer-agnostic and testable; the
+    app turns them into draggable/zoomable vis.js nodes via streamlit-agraph.
+    """
     blocked = set(blocked)
     g = nx.DiGraph()
     for a, row in attrs.iterrows():
@@ -187,39 +191,23 @@ def build_graph(edges, attrs, alert=None, blocked=()):
         g.add_edge(e.source_account, e.target_account,
                    risk=float(e.risk_score or 0), amount=float(e.amount), n_tx=int(e.n_tx))
 
-    if g.number_of_nodes() == 0:
-        return go.Figure(), g
-    pos = nx.spring_layout(g, seed=42, k=1.1 / (len(g) ** 0.5))
-
-    lo_x, lo_y, hi_x, hi_y = [], [], [], []
-    for u, v, d in g.edges(data=True):
-        x0, y0 = pos[u]; x1, y1 = pos[v]
-        (hi_x if d["risk"] >= 0.7 else lo_x).extend([x0, x1, None])
-        (hi_y if d["risk"] >= 0.7 else lo_y).extend([y0, y1, None])
-    traces = [
-        go.Scatter(x=lo_x, y=lo_y, mode="lines", hoverinfo="none",
-                   line=dict(width=1, color="rgba(130,144,168,0.40)")),
-        go.Scatter(x=hi_x, y=hi_y, mode="lines", hoverinfo="none",
-                   line=dict(width=2.4, color="rgba(228,87,46,0.85)")),
-    ]
-
-    nx_, ny_, col, siz, txt, cd, lc, lw = [], [], [], [], [], [], [], []
+    node_specs = []
     for n, d in g.nodes(data=True):
-        x, y = pos[n]; nx_.append(x); ny_.append(y)
         is_blk, is_alert = n in blocked, n == alert
-        col.append("#5b6573" if is_blk else _hex(d["tox"]))
-        siz.append(14 + 2.2 * g.degree(n))
-        txt.append(f"{n}<br>role: {d['role'] or '—'}<br>toxicity: {d['tox']:.2f}"
-                   f"<br>fraud (ground truth): {d['fraud']}" + ("<br>BLOCKED" if is_blk else ""))
-        cd.append([n])
-        lc.append("#FFFFFF" if (is_blk or is_alert) else "#2b3a4a")
-        lw.append(3 if (is_blk or is_alert) else 1)
-    traces.append(go.Scatter(
-        x=nx_, y=ny_, mode="markers", hoverinfo="text", hovertext=txt, customdata=cd,
-        marker=dict(color=col, size=siz, line=dict(color=lc, width=lw))))
-
-    fig = go.Figure(traces)
-    fig.update_layout(showlegend=False, paper_bgcolor="#10141A", plot_bgcolor="#10141A",
-                      margin=dict(l=0, r=0, t=0, b=0), height=560, dragmode="pan",
-                      xaxis=dict(visible=False), yaxis=dict(visible=False))
-    return fig, g
+        node_specs.append({
+            "id": str(n), "label": str(n)[-5:], "size": 12 + 2.2 * g.degree(n),
+            "color": "#5b6573" if is_blk else _hex(TOX, d["tox"]),
+            "border": "#FFFFFF" if (is_blk or is_alert) else "#26324a",
+            "borderWidth": 4 if (is_blk or is_alert) else 1,
+            "shape": "diamond" if is_blk else ("star" if is_alert else "dot"),
+            "title": (f"{n} | role: {d['role'] or '—'} | toxicity: {d['tox']:.2f} | "
+                      f"fraud (ground truth): {d['fraud']}" + (" | BLOCKED" if is_blk else "")),
+        })
+    edge_specs = []
+    for u, v, d in g.edges(data=True):
+        edge_specs.append({
+            "source": str(u), "target": str(v), "color": _hex(RISK, d["risk"]),
+            "width": 1 + 1.4 * (d["n_tx"] ** 0.5) + 3 * d["risk"],
+            "title": f"{d['n_tx']} tx | total {d['amount']:.0f} | peak risk {d['risk']:.2f}",
+        })
+    return node_specs, edge_specs, g

@@ -38,6 +38,13 @@ class Stream:
         self.blocked = set()
         self.lock = threading.Lock()
         self._case_n = 0
+        # simulated clock: spread transactions over time (like the 30-day offline snapshot)
+        # so the ETL rolling window is meaningful and temporal deltas match training.
+        self.base_ts = 1_700_000_000
+        self.sim_ts = self.base_ts
+        # 2 simulated hours per tick keeps per-account counts in a 30-day window at the
+        # model's trained scale (out_degree ~10), so live toxicity matches the offline AUC.
+        self.sim_step = 7200
 
     def _new_acc(self, fraud=False, fresh=False):
         self._aid += 1
@@ -49,7 +56,8 @@ class Stream:
         self.tid += 1
         return {"tx_id": f"TX{int(time.time()*1000)}{self.tid:06d}",
                 "source_account": s, "target_account": d,
-                "amount": round(float(max(amount, 1.0)), 2), "ts": int(time.time()),
+                "amount": round(float(max(amount, 1.0)), 2),
+                "ts": int(self.sim_ts + self.rng.randint(0, max(1, self.sim_step))),
                 "typology_id": case_id, "is_fraud": int(fraud),
                 "src_opened": self._ages.get(s, 100), "dst_opened": self._ages.get(d, 100)}
 
@@ -117,6 +125,7 @@ class Stream:
 
     def tick(self, n_legit=80):
         out = []
+        self.sim_ts += self.sim_step             # advance simulated time each tick
         for _ in range(n_legit):                 # legit volume dominates (realistic base rate)
             out += self.legit_tx()
         for c in self.cases:                     # only some cases fire each tick -> burstier, less volume
@@ -154,9 +163,12 @@ def main():
     ap.add_argument("--rate", type=float, default=80.0, help="legit transactions per tick (the majority)")
     ap.add_argument("--case-every", type=float, default=90.0, help="seconds between new fraud cases")
     ap.add_argument("--max-cases", type=int, default=8, help="max simultaneously active fraud cases")
+    ap.add_argument("--sim-step", type=int, default=7200,
+                    help="simulated seconds per tick (spreads tx over time for the ETL window)")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
     s = Stream(max_cases=args.max_cases)
+    s.sim_step = args.sim_step
 
     if args.dry_run:
         s.open_case(); s.open_case()

@@ -155,6 +155,36 @@ def consume_blocklist(stream, bootstrap, topic):
             print(f"[BLOCK] received {acc}", flush=True); stream.block(acc)
 
 
+def dump_parquet(s, out, days, n_legit, case_every_days=2.0):
+    """Offline: run the SAME stream and write a labelled training set, so the model
+    trains on the serving distribution. Produces transactions/accounts.parquet."""
+    import os
+    import pandas as pd
+    K = max(1, int(case_every_days * 86400 / s.sim_step))
+    ticks = max(1, int(days * 86400 / s.sim_step))
+    edges = []
+    for t in range(ticks):
+        if t % K == 0:
+            s.open_case()
+        edges += s.tick(n_legit=n_legit)
+    tx = pd.DataFrame(edges); tx["ml_status"] = "PENDING"
+    fe = tx[tx.is_fraud == 1]
+    inc = pd.concat([fe[["source_account", "typology_id"]].rename(columns={"source_account": "account_id"}),
+                     fe[["target_account", "typology_id"]].rename(columns={"target_account": "account_id"})])
+    typ_map = inc.groupby("account_id").typology_id.first().to_dict()
+    ids = sorted(set(tx.source_account) | set(tx.target_account))
+    acc = pd.DataFrame({"account_id": ids})
+    acc["opened_days_ago"] = acc.account_id.map(lambda a: s._ages.get(a, 100))
+    acc["is_fraud"] = acc.account_id.map(lambda a: int(a in typ_map))
+    acc["typology_id"] = acc.account_id.map(typ_map)
+    acc["fraud_role"] = acc.typology_id.map(lambda v: v.split("_")[0] if isinstance(v, str) else "legit")
+    os.makedirs(out, exist_ok=True)
+    tx.to_parquet(f"{out}/transactions.parquet", index=False)
+    acc.to_parquet(f"{out}/accounts.parquet", index=False)
+    print(f"[dump] {len(tx)} tx, {len(acc)} accounts ({acc.is_fraud.mean()*100:.1f}% fraud), "
+          f"~{days} sim-days -> {out}", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--bootstrap", default="kafka:9092")
@@ -166,9 +196,15 @@ def main():
     ap.add_argument("--sim-step", type=int, default=7200,
                     help="simulated seconds per tick (spreads tx over time for the ETL window)")
     ap.add_argument("--dry-run", action="store_true")
+    ap.add_argument("--dump-parquet", help="offline: write a labelled training set to this dir and exit")
+    ap.add_argument("--dump-days", type=int, default=45, help="sim-days to generate for the dump")
     args = ap.parse_args()
     s = Stream(max_cases=args.max_cases)
     s.sim_step = args.sim_step
+
+    if args.dump_parquet:
+        dump_parquet(s, args.dump_parquet, args.dump_days, n_legit=int(max(args.rate, 1)))
+        return
 
     if args.dry_run:
         s.open_case(); s.open_case()

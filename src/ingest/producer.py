@@ -34,6 +34,7 @@ class Stream:
         self.victims = self.rng.sample(self.legit, n_victims)   # legit targets of persistent fraud
         self.demo = False                                       # --demo-contamination (visible recovery)
         self.demo_victims = self.rng.sample(self.legit, 3)      # legit accounts fed structured deposits
+        self._demo_ring = []                                    # small fixed fraud ring feeding the victims
         self.cases = []                 # active persistent fraud cases (bounded)
         self.max_cases = max_cases      # retire the oldest beyond this -> fraud stays a minority
         self.case_activity = case_activity   # prob a case emits on a given tick (burstier, less volume)
@@ -126,11 +127,19 @@ class Stream:
                 tx(src, sm, amt); tx(sm, agg, amt * 0.98)
             if self.rng.random() < 0.3:
                 tx(agg, c["victim"], self.rng.uniform(2e4, 8e4))
+        return out
 
-        if self.demo and a:   # demo recovery: feed a legit victim heavy STRUCTURED deposits so the
-            dv = self.rng.choice(self.demo_victims)   # model (correctly) lights it up; blocking heals it
-            for s_ in self.rng.sample(a, min(3, len(a))):
-                tx(s_, dv, self.rng.uniform(STRUCT_LO, STRUCT_HI))
+    def _demo_tick(self):
+        """Visible recovery: a small FIXED fraud ring feeds the demo victims structured
+        deposits. Blocking that ring (one 'Block whole chain') fully heals the victims."""
+        if not self._demo_ring:
+            self._demo_ring = [self._new_acc(fraud=True, fresh=True) for _ in range(5)]
+        out = []
+        for dv in self.demo_victims:
+            for r in self._demo_ring:
+                if not edge_blocked(r, dv, self.blocked):
+                    out.append(self._msg(r, dv, self.rng.uniform(STRUCT_LO, STRUCT_HI),
+                                         case_id="demo_ring", fraud=True))
         return out
 
     def tick(self, n_legit=80):
@@ -141,6 +150,8 @@ class Stream:
         for c in self.cases:                     # only some cases fire each tick -> burstier, less volume
             if self.rng.random() < self.case_activity:
                 out += self._emit_case(c)
+        if self.demo:
+            out += self._demo_tick()
         return out
 
     def block(self, acc):

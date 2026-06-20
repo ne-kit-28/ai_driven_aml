@@ -96,10 +96,20 @@ class IcebergIO:
         df = tx_t.scan(row_filter=In("ml_status", ("FEATURES_READY", "SCORED"))).to_pandas()
         if not len(df):
             return df
+        blk = self._blocked()                                          # recovery: drop blocked accounts'
+        if blk:                                                        # edges from the replay so their
+            df = df[~df.source_account.isin(blk) & ~df.target_account.isin(blk)]  # victims heal next cycle
         maxts = df.ts.max()
         df = df[df.ts >= maxts - window_days * 86400].sort_values("ts").reset_index(drop=True)
-        print(f"[reader] window edges: {len(df)} | new: {(~df.tx_id.isin(self.seen)).sum()}", flush=True)
+        print(f"[reader] window edges: {len(df)} | new: {(~df.tx_id.isin(self.seen)).sum()} | blocked: {len(blk)}", flush=True)
         return df[TXCOLS].copy()
+
+    def _blocked(self):
+        try:
+            return set(self.cat.load_table("banking.blocklist")
+                       .scan(selected_fields=("account_id",)).to_pandas()["account_id"])
+        except Exception:
+            return set()
 
     def unscored(self, edges):
         return edges[~edges.tx_id.isin(self.seen)] if len(edges) else edges

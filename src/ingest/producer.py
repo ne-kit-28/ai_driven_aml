@@ -38,6 +38,7 @@ class Stream:
         self.blocked = set()
         self.lock = threading.Lock()
         self._case_n = 0
+        self.fraud_ids = set()      # ground-truth fraud accounts (case participants, NOT victims)
         # simulated clock: spread transactions over time (like the 30-day offline snapshot)
         # so the ETL rolling window is meaningful and temporal deltas match training.
         self.base_ts = 1_700_000_000
@@ -50,6 +51,8 @@ class Stream:
         self._aid += 1
         a = f"ACC{self._aid:07d}"
         self._ages[a] = self.rng.randint(0, 9) if fresh else self.rng.randint(20, 2000)
+        if fraud:
+            self.fraud_ids.add(a)      # case participant — the ground-truth fraud label
         return a
 
     def _msg(self, s, d, amount, case_id=None, fraud=False):
@@ -168,6 +171,9 @@ def dump_parquet(s, out, days, n_legit, case_every_days=2.0):
             s.open_case()
         edges += s.tick(n_legit=n_legit)
     tx = pd.DataFrame(edges); tx["ml_status"] = "PENDING"
+    # ground-truth labels: an account is fraud only if it is a CASE PARTICIPANT (s.fraud_ids).
+    # legit "victims" receive a fraud cash-out but stay legit — labelling them fraud would teach
+    # the model that receiving a large transfer = fraud and break the recovery story.
     fe = tx[tx.is_fraud == 1]
     inc = pd.concat([fe[["source_account", "typology_id"]].rename(columns={"source_account": "account_id"}),
                      fe[["target_account", "typology_id"]].rename(columns={"target_account": "account_id"})])
@@ -175,8 +181,8 @@ def dump_parquet(s, out, days, n_legit, case_every_days=2.0):
     ids = sorted(set(tx.source_account) | set(tx.target_account))
     acc = pd.DataFrame({"account_id": ids})
     acc["opened_days_ago"] = acc.account_id.map(lambda a: s._ages.get(a, 100))
-    acc["is_fraud"] = acc.account_id.map(lambda a: int(a in typ_map))
-    acc["typology_id"] = acc.account_id.map(typ_map)
+    acc["is_fraud"] = acc.account_id.map(lambda a: int(a in s.fraud_ids))
+    acc["typology_id"] = acc.account_id.map(lambda a: typ_map.get(a) if a in s.fraud_ids else None)
     acc["fraud_role"] = acc.typology_id.map(lambda v: v.split("_")[0] if isinstance(v, str) else "legit")
     os.makedirs(out, exist_ok=True)
     tx.to_parquet(f"{out}/transactions.parquet", index=False)

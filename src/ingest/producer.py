@@ -21,15 +21,20 @@ STRUCT_LO, STRUCT_HI = 9000.0, 9500.0
 
 
 class Stream:
-    def __init__(self, seed=7, n_legit=400, n_victims=25):
+    def __init__(self, seed=7, n_legit=2500, n_hubs=30, n_victims=40,
+                 max_cases=8, case_activity=0.5):
+        # mirror the offline generator's scale so the live stream matches training:
+        # a large legit majority, a handful of hubs, and only a few active fraud cases.
         self.rng = random.Random(seed)
         self._aid = 0
         self.tid = 0
         self._ages = {}
         self.legit = [self._new_acc() for _ in range(n_legit)]
-        self.hubs = [self._new_acc() for _ in range(8)]
+        self.hubs = [self._new_acc() for _ in range(n_hubs)]
         self.victims = self.rng.sample(self.legit, n_victims)   # legit targets of persistent fraud
-        self.cases = []                 # active persistent fraud cases
+        self.cases = []                 # active persistent fraud cases (bounded)
+        self.max_cases = max_cases      # retire the oldest beyond this -> fraud stays a minority
+        self.case_activity = case_activity   # prob a case emits on a given tick (burstier, less volume)
         self.blocked = set()
         self.lock = threading.Lock()
         self._case_n = 0
@@ -76,6 +81,9 @@ class Stream:
                     [self._new_acc(True, True) for _ in range(self.rng.randint(6, 12))]
         self.cases.append({"id": cid, "kind": kind, "accounts": accts, "victim": victim})
         print(f"[INJECT] case={cid} typology={kind} victim={victim} nodes={accts}", flush=True)
+        while len(self.cases) > self.max_cases:      # retire oldest -> bounded fraud population
+            old = self.cases.pop(0)
+            print(f"[RETIRE] case={old['id']} (stops emitting)", flush=True)
 
     def _emit_case(self, c):
         out, k, a = [], c["kind"], c["accounts"]
@@ -107,12 +115,13 @@ class Stream:
                 tx(agg, c["victim"], self.rng.uniform(2e4, 8e4))
         return out
 
-    def tick(self, n_legit=5):
+    def tick(self, n_legit=80):
         out = []
-        for _ in range(n_legit):
+        for _ in range(n_legit):                 # legit volume dominates (realistic base rate)
             out += self.legit_tx()
-        for c in self.cases:
-            out += self._emit_case(c)
+        for c in self.cases:                     # only some cases fire each tick -> burstier, less volume
+            if self.rng.random() < self.case_activity:
+                out += self._emit_case(c)
         return out
 
     def block(self, acc):
@@ -142,11 +151,12 @@ def main():
     ap.add_argument("--bootstrap", default="kafka:9092")
     ap.add_argument("--topic", default="tx_raw")
     ap.add_argument("--blocklist-topic", default="blocklist")
-    ap.add_argument("--rate", type=float, default=5.0)
-    ap.add_argument("--case-every", type=float, default=45.0, help="seconds between new fraud cases")
+    ap.add_argument("--rate", type=float, default=80.0, help="legit transactions per tick (the majority)")
+    ap.add_argument("--case-every", type=float, default=90.0, help="seconds between new fraud cases")
+    ap.add_argument("--max-cases", type=int, default=8, help="max simultaneously active fraud cases")
     ap.add_argument("--dry-run", action="store_true")
     args = ap.parse_args()
-    s = Stream()
+    s = Stream(max_cases=args.max_cases)
 
     if args.dry_run:
         s.open_case(); s.open_case()
@@ -181,8 +191,8 @@ def main():
             s.open_case(); last_case = time.time()
         for m in s.tick(n_legit=int(max(args.rate, 1))):
             prod.send(args.topic, m); sent += 1
-        if sent % 200 < 12:
-            print(f"[producer] sent ~{sent}, active cases {len(s.cases)}", flush=True)
+        if sent % 400 < 90:
+            print(f"[producer] sent ~{sent}, active cases {len(s.cases)}/{s.max_cases}", flush=True)
         time.sleep(1.0)
 
 

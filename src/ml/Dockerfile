@@ -10,4 +10,4 @@ COPY features.py exactly_once.py stream_model.py infer_stream.py ./
 
 ENV PYTHONUNBUFFERED=1
 # model artifact is mounted at /artifacts; bookmark/state at /state
-CMD ["python", "infer_stream.py", "--io", "iceberg", "--loop", "--interval", "10", "--artifacts", "/artifacts"]
+CMD ["python", "infer_stream.py", "--io", "iceberg", "--loop", "--interval", "4", "--artifacts", "/artifacts"]

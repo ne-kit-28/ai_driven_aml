@@ -10,7 +10,7 @@ training (a single chronological pass), so live scores match the offline AUC
 instead of drifting as memory accumulates.
 
   python infer_stream.py --io parquet --data data --out data        # one cycle (test)
-  python infer_stream.py --io iceberg --loop --interval 10           # live
+  python infer_stream.py --io iceberg --loop --interval 4           # live
 """
 from __future__ import annotations
 import argparse, json, time
@@ -211,7 +211,7 @@ def main():
     ap.add_argument("--data", default="data"); ap.add_argument("--out", default="data")
     ap.add_argument("--artifacts", default="src/ml/artifacts")
     ap.add_argument("--batch-size", type=int, default=512)
-    ap.add_argument("--loop", action="store_true"); ap.add_argument("--interval", type=int, default=10)
+    ap.add_argument("--loop", action="store_true"); ap.add_argument("--interval", type=int, default=4)
     ap.add_argument("--snapshot-every", type=int, default=1)
     ap.add_argument("--window-days", type=int, default=30,
                     help="rolling window replayed each cycle (match the ETL feature window)")

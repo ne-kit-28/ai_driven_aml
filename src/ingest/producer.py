@@ -35,6 +35,8 @@ class Stream:
         self.demo = False                                       # --demo-contamination (visible recovery)
         self.demo_victims = self.rng.sample(self.legit, 3)      # legit accounts fed structured deposits
         self._demo_rings = {}                                   # victim -> its own small fraud ring
+        self._demo_cases = []                                   # one persistent case per typology
+        self._demo_chain = None                                 # a layering chain that grows each tick
         self.cases = []                 # active persistent fraud cases (bounded)
         self.max_cases = max_cases      # retire the oldest beyond this -> fraud stays a minority
         self.case_activity = case_activity   # prob a case emits on a given tick (burstier, less volume)
@@ -79,9 +81,9 @@ class Stream:
             amt = self.rng.uniform(STRUCT_LO, STRUCT_HI)
         return [] if edge_blocked(s, d, self.blocked) else [self._msg(s, d, amt)]
 
-    def open_case(self):
+    def _build_case(self, kind=None):
         self._case_n += 1
-        kind = self.rng.choice(["fanin", "chain", "ring", "smurf"])
+        kind = kind or self.rng.choice(["fanin", "chain", "ring", "smurf"])
         cid = f"{kind}_{self._case_n}"
         victim = self.rng.choice(self.victims)
         if kind == "fanin":
@@ -93,8 +95,11 @@ class Stream:
         else:  # smurf: [src, agg, smurfs...]
             accts = [self._new_acc(True, True), self._new_acc(True, True)] + \
                     [self._new_acc(True, True) for _ in range(self.rng.randint(6, 12))]
-        self.cases.append({"id": cid, "kind": kind, "accounts": accts, "victim": victim})
         print(f"[INJECT] case={cid} typology={kind} victim={victim} nodes={accts}", flush=True)
+        return {"id": cid, "kind": kind, "accounts": accts, "victim": victim}
+
+    def open_case(self):
+        self.cases.append(self._build_case())
         while len(self.cases) > self.max_cases:      # retire oldest -> bounded fraud population
             old = self.cases.pop(0)
             print(f"[RETIRE] case={old['id']} (stops emitting)", flush=True)
@@ -130,18 +135,35 @@ class Stream:
         return out
 
     def _demo_tick(self):
-        """Visible recovery: each demo victim has its OWN small fraud ring feeding it
-        structured deposits. Investigate the victim and 'Block fraud around it' -> the ring
-        is removed and only that victim heals (no other victim is touched)."""
+        """Demo aids (only with --demo-contamination):
+        - each victim has its OWN ring feeding it structured deposits (visible recovery);
+        - one persistent case of EACH typology so all show from the start;
+        - a layering chain that GROWS by a hop every tick (watch it extend live)."""
+        out = []
         if not self._demo_rings:
             self._demo_rings = {v: [self._new_acc(fraud=True, fresh=True) for _ in range(4)]
                                 for v in self.demo_victims}
-        out = []
+            self._demo_cases = [self._build_case(k) for k in ("ring", "smurf", "fanin")]
+            self._demo_chain = self._build_case("chain")
+            print(f"[demo] growing chain head: {self._demo_chain['accounts'][0]}", flush=True)
+        # 1) feed victims (for recovery)
         for dv, ring in self._demo_rings.items():
             for r in ring:
                 if not edge_blocked(r, dv, self.blocked):
                     out.append(self._msg(r, dv, self.rng.uniform(STRUCT_LO, STRUCT_HI),
                                          case_id="demo_ring", fraud=True))
+        # 2) one of each typology, always active
+        for c in self._demo_cases:
+            out += self._emit_case(c)
+        # 3) growing layering chain: emit current activity + append one new hop
+        c = self._demo_chain; a = c["accounts"]
+        out += self._emit_case(c)
+        if len(a) < 60:
+            new = self._new_acc(fraud=True, fresh=True)
+            amt = self.rng.uniform(5e4, 2e5) * (0.99 ** len(a))
+            if not edge_blocked(a[-1], new, self.blocked):
+                out.append(self._msg(a[-1], new, amt, c["id"], fraud=True))
+            a.append(new)
         return out
 
     def tick(self, n_legit=80):
